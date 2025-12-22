@@ -77,7 +77,7 @@ export default function LaboratoryDashboard() {
             </div>
             <div>
               <h1 className="text-lg text-gray-800">{user?.name || 'Laboratory'}</h1>
-              <p className="text-xs text-gray-500">Diagnostic Center</p>
+              <p className="text-xs text-gray-500">Lab ID: {user?.unique_id || 'N/A'}</p>
             </div>
           </div>
           <button onClick={handleLogout} className="p-2 hover:bg-gray-100 rounded-full">

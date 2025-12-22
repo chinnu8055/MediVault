@@ -91,7 +91,7 @@ export default function DoctorDashboard() {
             </div>
             <div>
               <h1 className="text-lg text-gray-800">{user?.name || 'Doctor'}</h1>
-              <p className="text-xs text-gray-500">Medical Professional</p>
+              <p className="text-xs text-gray-500">Doctor ID: {user?.unique_id || 'N/A'}</p>
             </div>
           </div>
           <button onClick={handleLogout} className="p-2 hover:bg-gray-100 rounded-full">

@@ -30,7 +30,7 @@ export default function PatientDashboard() {
             </div>
             <div>
               <h1 className="text-lg text-gray-800">{user?.name || 'Patient'}</h1>
-              <p className="text-xs text-gray-500">ABHA ID: 14-1234-5678-9012</p>
+              <p className="text-xs text-gray-500">Patient ID: {user?.unique_id || 'N/A'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">

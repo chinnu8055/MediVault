@@ -21,6 +21,7 @@ interface User {
   id: string;
   name: string;
   type: 'patient' | 'doctor' | 'lab';
+  unique_id?: string;
 }
 
 interface AppContextType {

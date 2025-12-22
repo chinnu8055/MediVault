@@ -27,8 +27,9 @@ export default function UnifiedAuth() {
   });
   const [isCheckingSession, setIsCheckingSession] = useState(true);
 
-  // Demo mode - set to false when you have real Twilio credentials
-  const DEMO_MODE = false;
+  // Demo mode for phone authentication - set to false when you have real Twilio credentials
+  // Google OAuth is available regardless of DEMO_MODE setting
+  const DEMO_MODE = true;
   const DEMO_OTP = '123456';
 
   // Check for existing session on mount
@@ -141,7 +142,8 @@ export default function UnifiedAuth() {
         setUser({
           id: profile.unique_id,
           name: profile.name,
-          type: profile.role
+          type: profile.role,
+          unique_id: profile.unique_id
         });
         navigateToDashboard(profile.role);
         return; // Don't set checking to false, we're redirecting
@@ -199,16 +201,10 @@ export default function UnifiedAuth() {
         return;
       }
       
-      // For demo mode, show a message about Google OAuth setup
+      // Demo mode still allows Google OAuth; show a gentle reminder about Supabase setup
       if (DEMO_MODE) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UnifiedAuth.tsx:189',message:'DEMO_MODE is true - blocking OAuth',data:{DEMO_MODE},timestamp:Date.now(),sessionId:'debug-session',runId:'run6',hypothesisId:'F'})}).catch(()=>{});
-        // #endregion
-        toast.error('Google OAuth requires Supabase configuration. Use phone OTP with demo mode instead!', {
-          duration: 4000
-        });
-        setLoading(false);
-        return;
+        fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UnifiedAuth.tsx:189',message:'DEMO_MODE true - proceeding with OAuth',data:{DEMO_MODE},timestamp:Date.now(),sessionId:'debug-session',runId:'run6',hypothesisId:'F'})}).catch(()=>{});
+        toast.message('Using demo mode. Ensure Google OAuth is configured in Supabase.');
       }
 
       // #region agent log
@@ -355,7 +351,8 @@ export default function UnifiedAuth() {
           setUser({
             id: profile.unique_id,
             name: profile.name,
-            type: profile.role
+            type: profile.role,
+            unique_id: profile.unique_id
           });
           navigateToDashboard(profile.role);
           toast.success('Login successful!');
@@ -386,7 +383,8 @@ export default function UnifiedAuth() {
             setUser({
               id: profile.unique_id,
               name: profile.name,
-              type: profile.role
+              type: profile.role,
+              unique_id: profile.unique_id
             });
             navigateToDashboard(profile.role);
             toast.success('Login successful!');
@@ -422,9 +420,34 @@ export default function UnifiedAuth() {
 
     setLoading(true);
     try {
-      if (DEMO_MODE) {
-        // Demo mode - create profile without auth user
-        // Generate unique ID
+      // Prefer real auth user if available (even in demo mode) to keep Google users consistent
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+
+      const hasAuthUser = !!authUser;
+      const isDemoOnly = DEMO_MODE && !authUser; // true only when no auth session and demo mode
+
+      if (isDemoOnly) {
+        // Demo mode - create profile without auth user (phone-based)
+        // Avoid duplicate demo profiles for the same phone
+        const { data: existingProfile } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('phone', `${countryCode}${mobileNumber}`)
+          .maybeSingle();
+
+        if (existingProfile) {
+          setUser({
+            id: existingProfile.unique_id,
+            name: existingProfile.name,
+            type: existingProfile.role,
+            unique_id: existingProfile.unique_id
+          });
+          toast.success('Welcome back!');
+          navigateToDashboard(existingProfile.role);
+          return;
+        }
+
+        // Generate unique ID for new demo profile
         const uniqueId = generateUniqueId(selectedRole);
 
         // Generate a valid UUID for demo mode
@@ -457,17 +480,37 @@ export default function UnifiedAuth() {
         setUser({
           id: uniqueId,
           name: userDetails.name,
-          type: selectedRole
+          type: selectedRole,
+          unique_id: uniqueId
         });
 
         toast.success('Registration successful!');
         navigateToDashboard(selectedRole);
       } else {
-        // Production mode - require auth user
-        const { data: { user } } = await supabase.auth.getUser();
-        
-        if (!user) {
+        // Authenticated path (Google or real phone auth). Use auth user_id to keep logins consistent.
+        const authUserId = authUser?.id;
+
+        if (!authUserId) {
           throw new Error('No authenticated user found');
+        }
+
+        // If profile already exists for this auth user, use it instead of creating a new one
+        const { data: existingProfile } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('user_id', authUserId)
+          .maybeSingle();
+
+        if (existingProfile) {
+          setUser({
+            id: existingProfile.unique_id,
+            name: existingProfile.name,
+            type: existingProfile.role,
+            unique_id: existingProfile.unique_id
+          });
+          toast.success('Welcome back!');
+          navigateToDashboard(existingProfile.role);
+          return;
         }
 
         // Generate unique ID
@@ -475,7 +518,7 @@ export default function UnifiedAuth() {
 
         // Create user profile
         const profileData: any = {
-          user_id: user.id,
+          user_id: authUserId,
           unique_id: uniqueId,
           name: userDetails.name,
           role: selectedRole,
@@ -501,7 +544,8 @@ export default function UnifiedAuth() {
         setUser({
           id: uniqueId,
           name: userDetails.name,
-          type: selectedRole
+          type: selectedRole,
+          unique_id: uniqueId
         });
 
         toast.success('Registration successful!');
