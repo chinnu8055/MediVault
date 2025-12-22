@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Share2, Clock, CheckCircle, XCircle, AlertCircle, User, ShieldCheck } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface Access {
   id: string;
@@ -25,58 +27,128 @@ export default function ShareAccess() {
   const [showGenerate, setShowGenerate] = useState(false);
   const [duration, setDuration] = useState('1hour');
 
-  const [accessCodes, setAccessCodes] = useState<Access[]>([
-    {
-      id: '1',
-      code: 'ABC-123-XYZ',
-      duration: '1 hour',
-      createdAt: new Date('2024-12-16T10:00:00'),
-      expiresAt: new Date('2024-12-16T11:00:00'),
-      status: 'active'
-    },
-    {
-      id: '2',
-      code: 'DEF-456-UVW',
-      duration: '1 day',
-      createdAt: new Date('2024-12-15T09:00:00'),
-      expiresAt: new Date('2024-12-16T09:00:00'),
-      status: 'expired'
-    }
-  ]);
+  const [accessCodes, setAccessCodes] = useState<Access[]>([]);
 
-  // Mock active doctor access data
-  const [activeDoctorAccess, setActiveDoctorAccess] = useState<ActiveDoctorAccess[]>([
-    {
-      id: '1',
-      doctorName: 'Dr. Sarah Johnson',
-      specialization: 'Cardiologist',
-      accessStartTime: new Date('2024-12-16T10:00:00'),
-      accessExpiryTime: new Date('2024-12-16T11:00:00'),
-      code: 'ABC-123-XYZ'
-    }
-  ]);
+  const [activeDoctorAccess, setActiveDoctorAccess] = useState<ActiveDoctorAccess[]>([]);
 
-  const handleGenerateCode = () => {
-    if (duration) {
-      const code = `${Math.random().toString(36).substr(2, 3).toUpperCase()}-${Math.random().toString(36).substr(2, 3)}-${Math.random().toString(36).substr(2, 3).toUpperCase()}`;
+  // Fetch existing codes on mount
+  useEffect(() => {
+    fetchAccessCodes();
+    fetchActiveDoctorAccess();
+  }, []);
+
+  const fetchAccessCodes = async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: {
+          'X-Function-Path': '/access/share/list'
+        },
+        body: { 
+          patient_id: userId 
+        }
+      });
+
+      if (error) throw error;
+
+      if (data?.codes) {
+        const formattedCodes: Access[] = data.codes.map((codeData: any) => ({
+          id: crypto.randomUUID(),
+          code: codeData.code,
+          duration: `${codeData.ttl_minutes} min`,
+          createdAt: new Date(codeData.created_at),
+          expiresAt: new Date(codeData.expires_at),
+          status: new Date(codeData.expires_at) > new Date() ? 'active' : 'expired'
+        }));
+        setAccessCodes(formattedCodes);
+      }
+    } catch (err: any) {
+      console.error('Fetch codes error', err);
+    }
+  };
+
+  const fetchActiveDoctorAccess = async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: {
+          'X-Function-Path': '/access/share/active'
+        },
+        body: { 
+          patient_id: userId 
+        }
+      });
+
+      if (error) throw error;
+
+      if (data?.active_access) {
+        const formattedAccess: ActiveDoctorAccess[] = data.active_access.map((access: any) => ({
+          id: access.id,
+          doctorName: access.doctor_name,
+          specialization: access.doctor_specialization,
+          accessStartTime: new Date(access.claimed_at),
+          accessExpiryTime: new Date(access.expires_at),
+          code: access.code
+        }));
+        setActiveDoctorAccess(formattedAccess);
+      }
+    } catch (err: any) {
+      console.error('Fetch active doctor access error', err);
+    }
+  };
+
+  const handleGenerateCode = async () => {
+    if (!duration) return;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const userId = sessionData.session?.user?.id;
+      if (!token) {
+        toast.error('Please sign in again to generate a code');
+        return;
+      }
+
+      const ttlMinutes = duration === '1hour' ? 60 : duration === '1day' ? 1440 : 10080; // 1 week
+
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: {
+          'X-Function-Path': '/access/share/generate'
+        },
+        body: { 
+          ttl_minutes: ttlMinutes,
+          patient_id: userId
+        }
+      });
+
+      if (error) throw error;
+
       const now = new Date();
-      const expiresAt = new Date(now);
-      
-      if (duration === '1hour') expiresAt.setHours(now.getHours() + 1);
-      else if (duration === '1day') expiresAt.setDate(now.getDate() + 1);
-      else if (duration === '1week') expiresAt.setDate(now.getDate() + 7);
+      const expiresAt = new Date(data.expires_at);
 
-      setAccessCodes([{
-        id: Date.now().toString(),
-        code,
-        duration: duration === '1hour' ? '1 hour' : duration === '1day' ? '1 day' : '1 week',
-        createdAt: now,
-        expiresAt,
-        status: 'active'
-      }, ...accessCodes]);
+      setAccessCodes([
+        {
+          id: crypto.randomUUID(),
+          code: data.code,
+          duration: duration === '1hour' ? '1 hour' : duration === '1day' ? '1 day' : '1 week',
+          createdAt: now,
+          expiresAt,
+          status: 'active'
+        },
+        ...accessCodes
+      ]);
 
+      toast.success('Access code generated');
       setShowGenerate(false);
       setDuration('1hour');
+    } catch (err: any) {
+      console.error('Generate code error', err);
+      toast.error(err?.message || 'Failed to generate code');
     }
   };
 
@@ -98,19 +170,44 @@ export default function ShareAccess() {
     }
   };
 
-  const handleRevokeAccess = (accessId: string) => {
-    if (confirm('Are you sure you want to revoke this doctor\'s access?')) {
-      setActiveDoctorAccess(activeDoctorAccess.filter(a => a.id !== accessId));
-      // Also update the access code status
-      setAccessCodes(accessCodes.map(code => {
-        const matchingAccess = activeDoctorAccess.find(a => a.id === accessId);
-        if (matchingAccess && code.code === matchingAccess.code) {
-          return { ...code, status: 'expired' as const };
-        }
-        return code;
-      }));
+  const handleRevokeAccess = async (accessId: string) => {
+    const target = activeDoctorAccess.find(a => a.id === accessId);
+    if (!target) return;
+    if (!confirm('Are you sure you want to revoke this doctor\'s access?')) return;
+    try {
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: { 'X-Function-Path': '/access/share/revoke' },
+        body: { code: target.code }
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      // Optimistic UI update
+      setActiveDoctorAccess(prev => prev.filter(a => a.id !== accessId));
+      setAccessCodes(prev => prev.filter(c => c.code !== target.code));
+      toast.success('Access revoked');
+
+      // Ensure consistency with backend
+      fetchActiveDoctorAccess();
+    } catch (err: any) {
+      console.error('Revoke access error', err);
+      toast.error(err?.message || 'Failed to revoke access');
     }
   };
+
+  // Auto-refresh active access on focus/visibility and every 30s
+  useEffect(() => {
+    const onFocus = () => fetchActiveDoctorAccess();
+    const onVisibility = () => { if (!document.hidden) fetchActiveDoctorAccess(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const interval = setInterval(() => fetchActiveDoctorAccess(), 30000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      clearInterval(interval);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-purple-50 to-white">
@@ -228,29 +325,7 @@ export default function ShareAccess() {
           </div>
         </div>
 
-        {/* Expired Codes - LESS PROMINENT */}
-        {accessCodes.filter(a => a.status === 'expired').length > 0 && (
-          <details className="bg-gray-50 rounded-xl p-4">
-            <summary className="text-sm text-gray-600 cursor-pointer">
-              Expired Access Codes ({accessCodes.filter(a => a.status === 'expired').length})
-            </summary>
-            <div className="space-y-2 mt-3">
-              {accessCodes.filter(a => a.status === 'expired').map(access => (
-                <div key={access.id} className="bg-white rounded-xl p-3 opacity-60">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-gray-50 flex items-center justify-center">
-                      <XCircle className="w-4 h-4 text-gray-400" />
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-800 tracking-wider">{access.code}</p>
-                      <p className="text-xs text-gray-500">Expired</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
+        {/* Expired codes intentionally hidden */}
       </div>
 
       {/* Generate Modal */}

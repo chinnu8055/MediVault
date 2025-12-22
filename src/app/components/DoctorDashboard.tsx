@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { LogOut, User, Users, KeyRound, CheckCircle, History, Search, Clock, X } from 'lucide-react';
 import { useApp } from '../App';
 import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface PatientAccess {
   id: string;
@@ -20,22 +21,7 @@ export default function DoctorDashboard() {
   const [accessCode, setAccessCode] = useState('');
   const [searchPatientId, setSearchPatientId] = useState('');
 
-  const [activePatients, setActivePatients] = useState<PatientAccess[]>([
-    {
-      id: '1',
-      patientName: 'John Doe',
-      patientId: 'P123456',
-      accessCode: 'ABC-123-XYZ',
-      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours from now
-    },
-    {
-      id: '2',
-      patientName: 'Jane Smith',
-      patientId: 'P789012',
-      accessCode: 'DEF-456-UVW',
-      expiresAt: new Date(Date.now() + 20 * 60 * 60 * 1000) // 20 hours from now
-    }
-  ]);
+  const [activePatients, setActivePatients] = useState<PatientAccess[]>([]);
 
   const handleLogout = async () => {
     // #region agent log
@@ -49,19 +35,62 @@ export default function DoctorDashboard() {
     navigate('/');
   };
 
-  const handleAccessCode = () => {
-    if (accessCode.trim()) {
-      // Mock patient access
+  const handleAccessCode = async () => {
+    const code = accessCode.trim();
+    if (!code) return;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        toast.error('Please sign in again');
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: {
+          'X-Function-Path': '/access/share/claim'
+        },
+        body: { 
+          code,
+          doctor_id: sessionData.session?.user?.id,
+          doctor_name: user?.name || sessionData.session?.user?.email || 'Doctor',
+          doctor_specialization: 'General Physician'
+        }
+      });
+
+      if (error) {
+        console.error('Claim code error', error);
+        toast.error(error.message || 'Failed to claim access code');
+        return;
+      }
+
+      // Check if the claim was successful
+      if (!data || data.error) {
+        toast.error(data?.error || 'Invalid access code');
+        return;
+      }
+
+      const patientName = data?.patient_name || 'Patient';
+      const patientId = data?.patient_unique_id || 'Unknown';
+      const expiresAt = data?.expires_at ? new Date(data.expires_at) : new Date(Date.now() + 60 * 60 * 1000);
+
       const newPatient: PatientAccess = {
         id: Date.now().toString(),
-        patientName: 'New Patient',
-        patientId: 'P' + Math.random().toString(36).substr(2, 6).toUpperCase(),
-        accessCode: accessCode,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        patientName,
+        patientId,
+        accessCode: code,
+        expiresAt
       };
+
       setActivePatients([...activePatients, newPatient]);
       setAccessCode('');
       setShowAccessModal(false);
+      toast.success('Access granted');
+    } catch (err: any) {
+      console.error('Claim code error', err);
+      // Surface clear error messages from function
+      const message = err?.message || 'Invalid or expired code';
+      toast.error(message);
     }
   };
 
