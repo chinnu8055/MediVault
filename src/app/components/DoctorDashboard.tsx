@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogOut, User, Users, KeyRound, CheckCircle, History, Search, Clock, X } from 'lucide-react';
 import { useApp } from '../App';
 import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface PatientAccess {
   id: string;
@@ -20,48 +21,215 @@ export default function DoctorDashboard() {
   const [accessCode, setAccessCode] = useState('');
   const [searchPatientId, setSearchPatientId] = useState('');
 
-  const [activePatients, setActivePatients] = useState<PatientAccess[]>([
-    {
-      id: '1',
-      patientName: 'John Doe',
-      patientId: 'P123456',
-      accessCode: 'ABC-123-XYZ',
-      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours from now
-    },
-    {
-      id: '2',
-      patientName: 'Jane Smith',
-      patientId: 'P789012',
-      accessCode: 'DEF-456-UVW',
-      expiresAt: new Date(Date.now() + 20 * 60 * 60 * 1000) // 20 hours from now
+  const [activePatients, setActivePatients] = useState<PatientAccess[]>([]);
+  const [activePatientCount, setActivePatientCount] = useState(0);
+  const [loadingCount, setLoadingCount] = useState(true);
+  const COUNT_CACHE_KEY = 'activePatientCount_cache'; // retained for backward compatibility; no longer used for reads
+
+  // Initialize user from session if not already set
+  useEffect(() => {
+    if (!user) {
+      const initializeUser = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id) {
+          const { data: profile } = await supabase
+            .from('user_profiles')
+            .select('unique_id, name, role')
+            .eq('user_id', session.user.id)
+            .maybeSingle();
+          
+          if (profile) {
+            setUser({
+              id: profile.unique_id,
+              name: profile.name,
+              type: profile.role,
+              unique_id: profile.unique_id
+            });
+          }
+        }
+      };
+      initializeUser();
     }
-  ]);
+  }, [user, setUser]);
+
+  // Fetch active patient count
+  useEffect(() => {
+    fetchActivePatientCount();
+    
+    // Refresh count periodically to catch any changes (e.g., when patient revokes)
+    const interval = setInterval(() => {
+      fetchActivePatientCount();
+    }, 30000); // 30 seconds
+    
+    // Also refresh when user comes back to the tab
+    const handleFocus = () => {
+      fetchActivePatientCount();
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const fetchActivePatientCount = async () => {
+    try {
+      setLoadingCount(true);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const doctorId = sessionData.session?.user?.id;
+      
+      if (!doctorId) {
+        setLoadingCount(false);
+        return;
+      }
+
+      const { data: allPatients } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('role', 'patient');
+
+      if (!allPatients || allPatients.length === 0) {
+        setActivePatientCount(0);
+        setLoadingCount(false);
+        return;
+      }
+
+      // Check access for all patients in parallel
+      const accessChecks = allPatients.map(patient =>
+        supabase.functions.invoke('server', {
+          headers: { 'X-Function-Path': '/access/share/active' },
+          body: { patient_id: patient.id }
+        })
+      );
+
+      const results = await Promise.all(accessChecks);
+      
+      const count = results.filter(({ data }) => {
+        if (!data?.active_access || !Array.isArray(data.active_access)) return false;
+        const doctorAccess = data.active_access.find((access: any) => access.claimed_by === doctorId);
+        return Boolean(doctorAccess);
+      }).length;
+
+      setActivePatientCount(count);
+
+      setLoadingCount(false);
+    } catch (err) {
+      console.error('Failed to fetch active patient count:', err);
+      setLoadingCount(false);
+    }
+  };
 
   const handleLogout = async () => {
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DoctorDashboard.tsx:39',message:'Logout initiated',data:{hasUser:!!user},timestamp:Date.now(),sessionId:'debug-session',runId:'run4',hypothesisId:'G'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'DoctorDashboard.tsx:39', message: 'Logout initiated', data: { hasUser: !!user }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'G' }) }).catch(() => { });
     // #endregion
     await supabase.auth.signOut();
     setUser(null);
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DoctorDashboard.tsx:42',message:'Logout completed, navigating to landing',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run4',hypothesisId:'G'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/cd329395-d87c-4886-8fdf-9624597e57f7', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'DoctorDashboard.tsx:42', message: 'Logout completed, navigating to landing', data: {}, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run4', hypothesisId: 'G' }) }).catch(() => { });
     // #endregion
     navigate('/');
   };
 
-  const handleAccessCode = () => {
-    if (accessCode.trim()) {
-      // Mock patient access
+  const handleAccessCode = async () => {
+    const code = accessCode.trim();
+    if (!code) return;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        toast.error('Please sign in again');
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('server', {
+        headers: {
+          'X-Function-Path': '/access/share/claim'
+        },
+        body: {
+          code,
+          doctor_id: sessionData.session?.user?.id,
+          doctor_name: user?.name || sessionData.session?.user?.email || 'Doctor',
+          doctor_specialization: 'General Physician'
+        }
+      });
+
+      if (error) {
+        console.error('Claim code error', error);
+        toast.error(error.message || 'Failed to claim access code');
+        return;
+      }
+
+      // Check if the claim was successful
+      if (!data || data.error) {
+        toast.error(data?.error || 'Invalid access code');
+        return;
+      }
+
+      console.log('Full response data from server:', data);
+
+      // If patient_unique_id is empty, try to fetch it from the database using the patient_id
+      let patientUniqueId = data?.patient_unique_id || '';
+      let patientName = data?.patient_name || 'Patient';
+      
+      // If we didn't get the patient unique_id from the server, fetch it directly
+      if (!patientUniqueId && data?.patient_id) {
+        try {
+          console.log('Fetching patient unique_id from database with patient_id:', data.patient_id);
+          const { data: profile, error: profileError } = await supabase
+            .from('user_profiles')
+            .select('unique_id, name')
+            .eq('id', data.patient_id)
+            .maybeSingle();
+          
+          if (profileError) {
+            console.error('Failed to fetch patient profile:', profileError);
+          } else if (profile) {
+            patientUniqueId = profile.unique_id || '';
+            patientName = profile.name || patientName;
+            console.log('Successfully fetched patient data:', { patientUniqueId, patientName });
+          } else {
+            console.log('No patient profile found');
+          }
+        } catch (err) {
+          console.error('Exception fetching patient unique_id:', err);
+        }
+      }
+
+      const expiresAt = data?.expires_at ? new Date(data.expires_at) : new Date(Date.now() + 60 * 60 * 1000);
+
+      console.log('Claim code result:', { patientName, patientId: patientUniqueId, expiresAt, responseData: data });
+
       const newPatient: PatientAccess = {
         id: Date.now().toString(),
-        patientName: 'New Patient',
-        patientId: 'P' + Math.random().toString(36).substr(2, 6).toUpperCase(),
-        accessCode: accessCode,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        patientName,
+        patientId: patientUniqueId,
+        accessCode: code,
+        expiresAt
       };
+
       setActivePatients([...activePatients, newPatient]);
       setAccessCode('');
       setShowAccessModal(false);
+      toast.success('Access granted');
+
+      // Navigate directly to patient records after successful claim
+      console.log('Checking navigation condition:', { patientId: patientUniqueId, condition: patientUniqueId && patientUniqueId !== 'Unknown' && patientUniqueId !== '' });
+      if (patientUniqueId && patientUniqueId !== 'Unknown' && patientUniqueId !== '') {
+        console.log('Navigating to patient records with patientId:', patientUniqueId);
+        // Refresh the count
+        fetchActivePatientCount();
+        navigate('/view-patient-records', { state: { patientId: patientUniqueId } });
+      } else {
+        console.log('Not navigating - patientId is:', patientUniqueId);
+        toast.error('Could not retrieve patient information. Please try again.');
+      }
+    } catch (err: any) {
+      console.error('Claim code error', err);
+      // Surface clear error messages from function
+      const message = err?.message || 'Invalid or expired code';
+      toast.error(message);
     }
   };
 
@@ -70,7 +238,7 @@ export default function DoctorDashboard() {
     const diff = expiresAt.getTime() - now.getTime();
     const hours = Math.floor(diff / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    
+
     if (hours > 24) {
       return `${Math.floor(hours / 24)} days left`;
     } else if (hours > 0) {
@@ -110,7 +278,7 @@ export default function DoctorDashboard() {
           <div className="flex items-center gap-3">
             <Users className="w-8 h-8" />
             <div>
-              <h2 className="text-2xl">{activePatients.length}</h2>
+              <h2 className="text-2xl">{loadingCount ? '...' : activePatientCount}</h2>
               <p className="text-sm text-blue-50">Current Accessible Patients</p>
             </div>
           </div>

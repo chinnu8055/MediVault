@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload } from 'lucide-react';
 import { useApp } from '../App';
@@ -6,6 +7,34 @@ import { supabase } from '../../lib/supabase';
 export default function PatientDashboard() {
   const navigate = useNavigate();
   const { user, setUser } = useApp();
+
+  // Initialize user profile on mount so patient ID persists after refresh
+  useEffect(() => {
+    if (!user) {
+      const initializeUser = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        const userId = session?.user?.id;
+        if (!userId) return;
+
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('unique_id, name, role')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (profile) {
+          setUser({
+            id: profile.unique_id,
+            name: profile.name,
+            type: profile.role,
+            unique_id: profile.unique_id
+          });
+        }
+      };
+
+      initializeUser();
+    }
+  }, [user, setUser]);
 
   const handleLogout = async () => {
     // #region agent log
