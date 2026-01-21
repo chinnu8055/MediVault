@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, FileText, Plus, User, AlertCircle, Calendar, Upload, ListFilter, X, Stethoscope } from 'lucide-react';
+import { ArrowLeft, FileText, Plus, User, AlertCircle, Calendar, Upload, ListFilter, X, Stethoscope, Trash2 } from 'lucide-react';
 import { useApp } from '../App';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'sonner';
@@ -10,6 +10,7 @@ interface Medicine {
   dosage: string;
   time: string[];
   duration: string;
+  instructions?: string;
 }
 
 interface DoctorVisit {
@@ -20,6 +21,7 @@ interface DoctorVisit {
   diagnosis: string;
   prescription: string[];
   type: 'visit';
+  doctor_id?: string;
 }
 
 interface LabReport {
@@ -52,6 +54,7 @@ export default function ViewPatientRecords() {
   const [selectedRecord, setSelectedRecord] = useState<PatientRecord | null>(null);
   const [hasAccess, setHasAccess] = useState<boolean | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [currentDoctorId, setCurrentDoctorId] = useState<string | null>(null);
   
   // Filter states
   const [typeFilter, setTypeFilter] = useState<'all' | 'report' | 'visit' | 'userUpload'>('all');
@@ -60,8 +63,11 @@ export default function ViewPatientRecords() {
   const [visitData, setVisitData] = useState({
     category: '',
     diagnosis: '',
-    medicines: [{ name: '', dosage: '', time: [] as string[], duration: '' }] as Medicine[]
+    medicines: [{ name: '', dosage: '', time: [] as string[], duration: '', instructions: '' }] as Medicine[]
   });
+  const [visitDate, setVisitDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [deletingVisitId, setDeletingVisitId] = useState<string | null>(null);
+  const [editingVisitId, setEditingVisitId] = useState<string | null>(null);
 
   const [patientInfo, setPatientInfo] = useState({
     name: 'Patient',
@@ -79,7 +85,7 @@ export default function ViewPatientRecords() {
 
   // Records from backend
   const [labReports] = useState<LabReport[]>([]);
-  const [doctorVisits] = useState<DoctorVisit[]>([]);
+  const [doctorVisits, setDoctorVisits] = useState<DoctorVisit[]>([]);
   const [userUploads, setUserUploads] = useState<UserUpload[]>([]);
 
   // Fetch patient profile (name/id) by unique_id from Supabase
@@ -113,6 +119,8 @@ export default function ViewPatientRecords() {
       try {
         const { data: sessionData } = await supabase.auth.getSession();
         const doctorId = sessionData.session?.user?.id; // This is the Supabase auth user ID
+        
+        setCurrentDoctorId(doctorId || null);
         
         if (!doctorId || !patientId) {
           console.log('Missing doctorId or patientId', { doctorId, patientId });
@@ -246,6 +254,41 @@ export default function ViewPatientRecords() {
     fetchPatientUploads();
   }, [hasAccess, patientId]);
 
+  // Fetch doctor visits after access is verified
+  useEffect(() => {
+    const fetchVisits = async () => {
+      if (!hasAccess || !patientId) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('doctor_visits')
+          .select('*')
+          .eq('patient_unique_id', patientId)
+          .order('visit_date', { ascending: false });
+
+        if (error) throw error;
+
+        if (data) {
+          const formatted: DoctorVisit[] = data.map(v => ({
+            id: v.id,
+            date: v.visit_date || v.created_at,
+            doctor: v.doctor_name || 'Doctor',
+            category: v.category || 'General',
+            diagnosis: v.diagnosis || '',
+            prescription: v.prescription || [],
+            type: 'visit',
+            doctor_id: v.doctor_id
+          }));
+          setDoctorVisits(formatted);
+        }
+      } catch (err) {
+        console.error('Failed to fetch doctor visits:', err);
+      }
+    };
+
+    fetchVisits();
+  }, [hasAccess, patientId]);
+
   const handleViewFile = async (upload: UserUpload) => {
     if (!upload.file_path) {
       toast.error('File path not found');
@@ -253,18 +296,48 @@ export default function ViewPatientRecords() {
     }
 
     try {
-      const { data, error } = await supabase.storage
-        .from('patient-uploads')
-        .createSignedUrl(upload.file_path, 3600); // 1 hour expiry
+      // Try multiple path variants in case the stored path has bucket prefix or encoding differences
+      const variants = [
+        upload.file_path,
+        decodeURIComponent(upload.file_path || ''),
+        upload.file_path.startsWith('patient-uploads/')
+          ? upload.file_path.replace(/^patient-uploads\//, '')
+          : `patient-uploads/${upload.file_path}`
+      ];
 
-      if (error) throw error;
+      let opened = false;
+      let lastError: any = null;
 
-      if (data?.signedUrl) {
-        window.open(data.signedUrl, '_blank');
+      for (const pathVariant of variants) {
+        try {
+          const { data, error } = await supabase.storage
+            .from('patient-uploads')
+            .createSignedUrl(pathVariant, 3600);
+
+          if (error) {
+            lastError = error;
+            continue;
+          }
+
+          if (data?.signedUrl) {
+            window.open(data.signedUrl, '_blank');
+            opened = true;
+            break;
+          }
+        } catch (innerErr) {
+          lastError = innerErr;
+        }
+      }
+
+      if (!opened) {
+        throw lastError || new Error('File not found');
       }
     } catch (err: any) {
       console.error('Failed to view file:', err);
-      toast.error('Failed to open file');
+      const message = err?.message?.includes('Object not found')
+        ? 'File not found. Ask the patient to re-upload.'
+        : err?.message || 'Failed to open file';
+      toast.error(message);
     }
   };
 
@@ -310,7 +383,7 @@ export default function ViewPatientRecords() {
   const addMedicine = () => {
     setVisitData({ 
       ...visitData, 
-      medicines: [...visitData.medicines, { name: '', dosage: '', time: [], duration: '' }] 
+      medicines: [...visitData.medicines, { name: '', dosage: '', time: [], duration: '', instructions: '' }] 
     });
   };
 
@@ -331,13 +404,170 @@ export default function ViewPatientRecords() {
     setVisitData({ ...visitData, medicines: newMeds });
   };
 
-  const handleSubmitVisit = () => {
-    if (visitData.category && visitData.diagnosis && 
-        visitData.medicines.some(m => m.name.trim() && m.dosage && m.time.length > 0 && m.duration)) {
-      // Submit prescription logic
-      alert('Visit added successfully');
+  const handleEditVisit = (visit: DoctorVisit) => {
+    // Parse prescription back to medicines format
+    const medicines: Medicine[] = visit.prescription.map(p => {
+      const parts = p.split(' - ');
+      const name = parts[0] || '';
+      const dosage = parts[1] || '';
+      const durationMatch = parts[2]?.match(/(\d+)\s*days/);
+      const duration = durationMatch ? durationMatch[1] : '';
+      const timeMatch = parts[2]?.match(/\(([^)]+)\)/);
+      const time = timeMatch ? timeMatch[1].split(', ').map(t => t.trim()) : [];
+      const instructionsMatch = parts[3];
+      const instructions = instructionsMatch || '';
+      return { name, dosage, time, duration, instructions };
+    });
+
+    setEditingVisitId(visit.id);
+    setVisitDate(visit.date);
+    setVisitData({
+      category: visit.category,
+      diagnosis: visit.diagnosis,
+      medicines: medicines.length > 0 ? medicines : [{ name: '', dosage: '', time: [], duration: '', instructions: '' }]
+    });
+    setShowVisitModal(true);
+  };
+
+  const handleDeleteVisit = async (visitId: string) => {
+    try {
+      setDeletingVisitId(visitId);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const doctorId = sessionData.session?.user?.id;
+      if (!doctorId) {
+        throw new Error('Not signed in');
+      }
+
+      const { error } = await supabase
+        .from('doctor_visits')
+        .delete()
+        .eq('id', visitId)
+        .eq('doctor_id', doctorId);
+
+      if (error) throw error;
+
+      setDoctorVisits(prev => prev.filter(v => v.id !== visitId));
+      toast.success('Visit deleted');
+      setSelectedRecord(null);
+    } catch (err: any) {
+      console.error('Failed to delete visit:', err);
+      toast.error(err?.message || 'Failed to delete visit');
+    } finally {
+      setDeletingVisitId(null);
+    }
+  };
+
+  const handleSubmitVisit = async () => {
+    if (!patientId) {
+      toast.error('Patient not found');
+      return;
+    }
+
+    if (!(visitData.category && visitData.diagnosis && visitDate)) {
+      toast.error('Fill category, diagnosis, and date');
+      return;
+    }
+
+    const hasValidMedicine = visitData.medicines.some(m => m.name.trim() && m.dosage && m.time.length > 0 && m.duration);
+    if (!hasValidMedicine) {
+      toast.error('Add at least one medicine with details');
+      return;
+    }
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const doctorId = sessionData.session?.user?.id;
+      if (!doctorId) {
+        throw new Error('Not signed in');
+      }
+
+      const { data: doctorProfile } = await supabase
+        .from('user_profiles')
+        .select('name')
+        .eq('user_id', doctorId)
+        .maybeSingle();
+
+      const doctorName = doctorProfile?.name || 'Doctor';
+      const prescription = visitData.medicines.map(m => {
+        let prescStr = `${m.name} - ${m.dosage} - ${m.duration} days (${m.time.join(', ')})`;
+        if (m.instructions && m.instructions.trim()) {
+          prescStr += ` - ${m.instructions}`;
+        }
+        return prescStr;
+      });
+
+      if (editingVisitId) {
+        // Update existing visit
+        const { data, error } = await supabase
+          .from('doctor_visits')
+          .update({
+            category: visitData.category,
+            diagnosis: visitData.diagnosis,
+            prescription,
+            visit_date: visitDate
+          })
+          .eq('id', editingVisitId)
+          .eq('doctor_id', doctorId)
+          .select()
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const updatedVisit: DoctorVisit = {
+          id: data?.id || editingVisitId,
+          date: data?.visit_date || visitDate,
+          doctor: data?.doctor_name || doctorName,
+          category: data?.category || visitData.category,
+          diagnosis: data?.diagnosis || visitData.diagnosis,
+          prescription: data?.prescription || prescription,
+          type: 'visit',
+          doctor_id: doctorId
+        };
+
+        setDoctorVisits(prev => prev.map(v => v.id === editingVisitId ? updatedVisit : v));
+        setSelectedRecord(updatedVisit);
+        toast.success('Visit updated');
+      } else {
+        // Create new visit
+        const { data, error } = await supabase
+          .from('doctor_visits')
+          .insert({
+            patient_unique_id: patientId,
+            doctor_id: doctorId,
+            doctor_name: doctorName,
+            category: visitData.category,
+            diagnosis: visitData.diagnosis,
+            prescription,
+            visit_date: visitDate
+          })
+          .select()
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const newVisit: DoctorVisit = {
+          id: data?.id || crypto.randomUUID(),
+          date: data?.visit_date || visitDate,
+          doctor: data?.doctor_name || doctorName,
+          category: data?.category || visitData.category,
+          diagnosis: data?.diagnosis || visitData.diagnosis,
+          prescription: data?.prescription || prescription,
+          type: 'visit',
+          doctor_id: doctorId
+        };
+
+        setDoctorVisits(prev => [newVisit, ...prev]);
+        toast.success('Visit added');
+      }
+
       setShowVisitModal(false);
-      setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '' }] });
+      setEditingVisitId(null);
+      setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }] });
+      setVisitDate(new Date().toISOString().split('T')[0]);
+    } catch (err: any) {
+      console.error('Failed to save visit:', err);
+      toast.error(err?.message || 'Failed to save visit');
     }
   };
 
@@ -482,9 +712,30 @@ export default function ViewPatientRecords() {
                         </p>
                         <p className="text-sm text-gray-600 mt-2">{selectedRecord.doctor}</p>
                       </div>
-                      <span className={`px-3 py-1 rounded-lg text-sm ${getCategoryColor(selectedRecord.category)}`}>
-                        {selectedRecord.category}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-3 py-1 rounded-lg text-sm ${getCategoryColor(selectedRecord.category)}`}>
+                          {selectedRecord.category}
+                        </span>
+                        {currentDoctorId && selectedRecord.doctor_id === currentDoctorId && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleEditVisit(selectedRecord)}
+                              className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                            >
+                              <Plus className="w-4 h-4" />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteVisit(selectedRecord.id)}
+                              disabled={deletingVisitId === selectedRecord.id}
+                              className="text-xs text-red-600 hover:text-red-700 flex items-center gap-1 disabled:opacity-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              {deletingVisitId === selectedRecord.id ? 'Deleting...' : 'Delete'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -781,8 +1032,19 @@ export default function ViewPatientRecords() {
       {showVisitModal && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 overflow-y-auto">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md p-6 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl text-gray-800 mb-4">Add Visit</h2>
+            <h2 className="text-xl text-gray-800 mb-4">{editingVisitId ? 'Edit Visit' : 'Add Visit'}</h2>
             <div className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-600 mb-1 block">Visit Date *</label>
+                <input
+                  type="date"
+                  value={visitDate}
+                  onChange={(e) => setVisitDate(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">Category *</label>
                 <select
@@ -875,6 +1137,17 @@ export default function ViewPatientRecords() {
                           ))}
                         </div>
                       </div>
+
+                      <div>
+                        <label className="text-xs text-gray-500 mb-1 block">Additional Instructions</label>
+                        <textarea
+                          placeholder="e.g., Take after meals, Avoid alcohol"
+                          value={med.instructions || ''}
+                          onChange={(e) => updateMedicine(idx, 'instructions', e.target.value)}
+                          rows={2}
+                          className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
+                        />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -884,7 +1157,9 @@ export default function ViewPatientRecords() {
                 <button
                   onClick={() => {
                     setShowVisitModal(false);
-                    setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '' }] });
+                    setEditingVisitId(null);
+                    setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }] });
+                    setVisitDate(new Date().toISOString().split('T')[0]);
                   }}
                   className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50"
                 >
@@ -894,7 +1169,7 @@ export default function ViewPatientRecords() {
                   onClick={handleSubmitVisit}
                   className="flex-1 px-4 py-3 rounded-xl bg-blue-500 text-white hover:bg-blue-600"
                 >
-                  Add Visit
+                  {editingVisitId ? 'Update Visit' : 'Add Visit'}
                 </button>
               </div>
             </div>

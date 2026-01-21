@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Calendar, Upload, FileText } from 'lucide-react';
+import { ArrowLeft, Calendar, Upload } from 'lucide-react';
+import { toast } from 'sonner';
+import { supabase } from '../../lib/supabase';
 
 interface Visit {
   id: string;
@@ -9,6 +11,7 @@ interface Visit {
   category: string;
   diagnosis: string;
   prescription: string[];
+  seen_by_patient?: boolean;
 }
 
 export default function DoctorVisits() {
@@ -16,41 +19,63 @@ export default function DoctorVisits() {
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [showUpload, setShowUpload] = useState(false);
   const [uploadDocumentDate, setUploadDocumentDate] = useState<string>('');
+  const [newVisitsCount, setNewVisitsCount] = useState<number>(0);
 
-  const visits: Visit[] = [
-    {
-      id: '1',
-      date: '2024-12-11',
-      doctor: 'Dr. Sarah Johnson',
-      category: 'General',
-      diagnosis: 'Seasonal allergies and mild fever',
-      prescription: ['Cetirizine 10mg - Once daily', 'Paracetamol 500mg - Thrice daily']
-    },
-    {
-      id: '2',
-      date: '2024-11-28',
-      doctor: 'Dr. Michael Chen',
-      category: 'Cardiology',
-      diagnosis: 'Routine heart checkup - All normal',
-      prescription: ['Continue regular exercise', 'Maintain healthy diet']
-    },
-    {
-      id: '3',
-      date: '2024-11-15',
-      doctor: 'Dr. Emily Roberts',
-      category: 'Dental',
-      diagnosis: 'Dental cleaning and checkup',
-      prescription: ['Regular brushing twice daily']
-    },
-    {
-      id: '4',
-      date: '2024-10-20',
-      doctor: 'Dr. Sarah Johnson',
-      category: 'General',
-      diagnosis: 'Annual physical examination',
-      prescription: ['All vitals normal', 'Continue current lifestyle']
-    }
-  ];
+  const [visits, setVisits] = useState<Visit[]>([]);
+
+  useEffect(() => {
+    const fetchVisits = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const userId = sessionData.session?.user?.id;
+        if (!userId) return;
+
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('unique_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (profileError || !profile?.unique_id) return;
+
+        const { data, error } = await supabase
+          .from('doctor_visits')
+          .select('*')
+          .eq('patient_unique_id', profile.unique_id)
+          .order('visit_date', { ascending: false });
+
+        if (error) return;
+
+        if (data) {
+          const formatted: Visit[] = data.map(v => ({
+            id: v.id,
+            date: v.visit_date || v.created_at,
+            doctor: v.doctor_name || 'Doctor',
+            category: v.category || 'General',
+            diagnosis: v.diagnosis || '',
+            prescription: v.prescription || [],
+            seen_by_patient: v.seen_by_patient
+          }));
+
+          const unseen = formatted.filter(v => !v.seen_by_patient);
+          setNewVisitsCount(unseen.length);
+          setVisits(formatted);
+
+          // Mark unseen as seen
+          if (unseen.length > 0) {
+            await supabase
+              .from('doctor_visits')
+              .update({ seen_by_patient: true })
+              .in('id', unseen.map(v => v.id));
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch doctor visits for patient:', err);
+      }
+    };
+
+    fetchVisits();
+  }, []);
 
   // Get unique categories
   const categories = Array.from(new Set(visits.map(v => v.category)));
@@ -88,13 +113,16 @@ export default function DoctorVisits() {
           <div className="flex-1">
             <h1 className="text-lg text-gray-800">Doctor Visits</h1>
           </div>
-          <button 
-            onClick={() => setShowUpload(true)}
-            className="px-3 py-2 rounded-xl bg-green-50 text-green-600 text-sm hover:bg-green-100 flex items-center gap-1"
-          >
-            <Upload className="w-4 h-4" />
-            Upload
-          </button>
+          {/* Upload button disabled for patients */}
+          {false && (
+            <button 
+              onClick={() => setShowUpload(true)}
+              className="px-3 py-2 rounded-xl bg-green-50 text-green-600 text-sm hover:bg-green-100 flex items-center gap-1"
+            >
+              <Upload className="w-4 h-4" />
+              Upload
+            </button>
+          )}
         </div>
       </div>
 
@@ -163,8 +191,8 @@ export default function DoctorVisits() {
         </div>
       </div>
 
-      {/* Upload Modal */}
-      {showUpload && (
+      {/* Upload Modal disabled for patients */}
+      {false && showUpload && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md p-6 max-h-[80vh] overflow-y-auto">
             <h2 className="text-xl text-gray-800 mb-4">Upload Document</h2>

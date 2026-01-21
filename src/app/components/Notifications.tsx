@@ -1,9 +1,12 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, Calendar, Pill, Stethoscope, FlaskConical } from 'lucide-react';
+import { ArrowLeft, FileText, Calendar, Pill, Stethoscope, FlaskConical, X } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface Notification {
   id: string;
-  type: 'lab_report' | 'doctor_visit';
+  type: 'lab_report' | 'doctor_visit' | 'medication_reminder';
   message: string;
   source: string;
   date: Date;
@@ -13,45 +16,99 @@ interface Notification {
 
 export default function Notifications() {
   const navigate = useNavigate();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
-  const notifications: Notification[] = [
-    {
-      id: '1',
-      type: 'lab_report',
-      message: 'New lab report: Blood Test has been uploaded',
-      source: 'MedLab Diagnostics',
-      date: new Date('2024-12-16T09:30:00'),
-      read: false,
-      relatedId: 'report-123'
-    },
-    {
-      id: '2',
-      type: 'doctor_visit',
-      message: 'New Doctor Visit Added',
-      source: 'Dr. Sarah Johnson',
-      date: new Date('2024-12-15T14:20:00'),
-      read: false,
-      relatedId: 'visit-456'
-    },
-    {
-      id: '3',
-      type: 'doctor_visit',
-      message: 'New Doctor Visit Added',
-      source: 'Dr. Michael Chen',
-      date: new Date('2024-12-14T11:15:00'),
-      read: true,
-      relatedId: 'visit-789'
-    },
-    {
-      id: '4',
-      type: 'lab_report',
-      message: 'New lab report: ECG Report has been uploaded',
-      source: 'Cardiac Care Center',
-      date: new Date('2024-12-13T16:45:00'),
-      read: true,
-      relatedId: 'report-321'
-    }
-  ];
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const userId = sessionData.session?.user?.id;
+        if (!userId) return;
+
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('unique_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!profile?.unique_id) return;
+
+        // Fetch visits
+        const { data: visits } = await supabase
+          .from('doctor_visits')
+          .select('*')
+          .eq('patient_unique_id', profile.unique_id)
+          .order('created_at', { ascending: false });
+
+        const notifs: Notification[] = [];
+        const seenKey = 'seen_notifications';
+        const seenIds = JSON.parse(localStorage.getItem(seenKey) || '[]');
+
+        // Add visit notifications
+        if (visits) {
+          visits.forEach(visit => {
+            notifs.push({
+              id: `visit-${visit.id}`,
+              type: 'doctor_visit',
+              message: 'New Doctor Visit Added',
+              source: visit.doctor_name || 'Doctor',
+              date: new Date(visit.created_at),
+              read: seenIds.includes(`visit-${visit.id}`),
+              relatedId: visit.id
+            });
+          });
+        }
+
+        // Add medication reminders
+        const now = new Date();
+        const currentHour = now.getHours();
+        const medicationTimes = {
+          'Morning': 8,
+          'Afternoon': 14,
+          'Night': 21
+        };
+
+        if (visits) {
+          visits.forEach(visit => {
+            if (visit.prescription && Array.isArray(visit.prescription)) {
+              visit.prescription.forEach((p: string, idx: number) => {
+                const timeMatch = p.match(/\(([^)]+)\)/);
+                const times = timeMatch ? timeMatch[1].split(', ').map((t: string) => t.trim()) : [];
+                const name = p.split(' - ')[0] || 'Medicine';
+
+                times.forEach((time: string) => {
+                  const scheduledHour = medicationTimes[time as keyof typeof medicationTimes];
+                  if (scheduledHour && currentHour === scheduledHour) {
+                    const medNotifId = `med-${visit.id}-${idx}-${time}-${now.toISOString().split('T')[0]}`;
+                    if (!seenIds.includes(medNotifId)) {
+                      notifs.push({
+                        id: medNotifId,
+                        type: 'medication_reminder',
+                        message: `Time to take ${name}`,
+                        source: `${time} dose`,
+                        date: now,
+                        read: false,
+                        relatedId: visit.id
+                      });
+                    }
+                  }
+                });
+              });
+            }
+          });
+        }
+
+        setNotifications(notifs.sort((a, b) => b.date.getTime() - a.date.getTime()));
+      } catch (err) {
+        console.error('Failed to fetch notifications:', err);
+      }
+    };
+
+    fetchNotifications();
+    // Refresh every minute to catch medication reminders
+    const interval = setInterval(fetchNotifications, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -59,6 +116,8 @@ export default function Notifications() {
         return <FlaskConical className="w-5 h-5 text-blue-600" />;
       case 'doctor_visit':
         return <Stethoscope className="w-5 h-5 text-green-600" />;
+      case 'medication_reminder':
+        return <Pill className="w-5 h-5 text-orange-600" />;
       default:
         return <FileText className="w-5 h-5 text-gray-600" />;
     }
@@ -70,6 +129,8 @@ export default function Notifications() {
         return 'bg-blue-50';
       case 'doctor_visit':
         return 'bg-green-50';
+      case 'medication_reminder':
+        return 'bg-orange-50';
       default:
         return 'bg-gray-50';
     }
@@ -92,12 +153,33 @@ export default function Notifications() {
     }
   };
 
+  const handleDismiss = (e: React.MouseEvent, notificationId: string) => {
+    e.stopPropagation();
+    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    
+    // Mark as dismissed in localStorage
+    const dismissedKey = 'dismissed_notifications';
+    const dismissed = JSON.parse(localStorage.getItem(dismissedKey) || '[]');
+    dismissed.push(notificationId);
+    localStorage.setItem(dismissedKey, JSON.stringify(dismissed));
+  };
+
   const handleNotificationClick = (notification: Notification) => {
-    // Navigate to related record
+    // Mark as seen
+    const seenKey = 'seen_notifications';
+    const seenIds = JSON.parse(localStorage.getItem(seenKey) || '[]');
+    if (!seenIds.includes(notification.id)) {
+      seenIds.push(notification.id);
+      localStorage.setItem(seenKey, JSON.stringify(seenIds));
+    }
+
+    // Navigate to related page
     if (notification.type === 'lab_report') {
       navigate('/my-records');
     } else if (notification.type === 'doctor_visit') {
       navigate('/doctor-visits');
+    } else if (notification.type === 'medication_reminder') {
+      navigate('/medications');
     }
   };
 
@@ -126,29 +208,39 @@ export default function Notifications() {
           </div>
         ) : (
           notifications.map(notification => (
-            <button
+            <div
               key={notification.id}
-              onClick={() => handleNotificationClick(notification)}
-              className={`w-full bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-all text-left ${
+              className={`relative w-full bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-all ${
                 !notification.read ? 'border-l-4 border-indigo-500' : ''
               }`}
             >
-              <div className="flex items-start gap-3">
-                <div className={`w-10 h-10 rounded-xl ${getIconBg(notification.type)} flex items-center justify-center flex-shrink-0`}>
-                  {getIcon(notification.type)}
+              <button
+                onClick={() => handleNotificationClick(notification)}
+                className="w-full text-left"
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`w-10 h-10 rounded-xl ${getIconBg(notification.type)} flex items-center justify-center flex-shrink-0`}>
+                    {getIcon(notification.type)}
+                  </div>
+                  <div className="flex-1 min-w-0 pr-6">
+                    <p className={`text-sm text-gray-800 mb-1 ${!notification.read ? 'font-medium' : ''}`}>
+                      {notification.message}
+                    </p>
+                    <p className="text-xs text-gray-500 mb-1">{notification.source}</p>
+                    <p className="text-xs text-gray-400">{formatDate(notification.date)}</p>
+                  </div>
+                  {!notification.read && (
+                    <div className="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0 mt-2" />
+                  )}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm text-gray-800 mb-1 ${!notification.read ? 'font-medium' : ''}`}>
-                    {notification.message}
-                  </p>
-                  <p className="text-xs text-gray-500 mb-1">{notification.source}</p>
-                  <p className="text-xs text-gray-400">{formatDate(notification.date)}</p>
-                </div>
-                {!notification.read && (
-                  <div className="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0 mt-2" />
-                )}
-              </div>
-            </button>
+              </button>
+              <button
+                onClick={(e) => handleDismiss(e, notification.id)}
+                className="absolute top-2 right-2 p-1 hover:bg-gray-100 rounded-full transition-colors"
+              >
+                <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
+              </button>
+            </div>
           ))
         )}
       </div>

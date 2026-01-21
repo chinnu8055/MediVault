@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload } from 'lucide-react';
 import { useApp } from '../App';
@@ -7,6 +7,12 @@ import { supabase } from '../../lib/supabase';
 export default function PatientDashboard() {
   const navigate = useNavigate();
   const { user, setUser } = useApp();
+  const [recentActivities, setRecentActivities] = useState<Array<{
+    id: string;
+    type: 'visit' | 'upload';
+    message: string;
+    date: Date;
+  }>>([]);
 
   // Initialize user profile on mount so patient ID persists after refresh
   useEffect(() => {
@@ -35,6 +41,73 @@ export default function PatientDashboard() {
       initializeUser();
     }
   }, [user, setUser]);
+
+  // Fetch recent activities
+  useEffect(() => {
+    const fetchActivities = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const userId = session?.user?.id;
+        if (!userId) return;
+
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('unique_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!profile?.unique_id) return;
+
+        const activities: Array<{ id: string; type: 'visit' | 'upload'; message: string; date: Date }> = [];
+
+        // Fetch doctor visits
+        const { data: visits } = await supabase
+          .from('doctor_visits')
+          .select('id, doctor_name, category, created_at')
+          .eq('patient_unique_id', profile.unique_id)
+          .order('created_at', { ascending: false })
+          .limit(3);
+
+        if (visits) {
+          visits.forEach(v => {
+            activities.push({
+              id: `visit-${v.id}`,
+              type: 'visit',
+              message: `Doctor Visit - ${v.category || 'General'}`,
+              date: new Date(v.created_at)
+            });
+          });
+        }
+
+        // Fetch user uploads
+        const { data: uploads } = await supabase
+          .from('user_uploads')
+          .select('id, file_name, uploaded_at')
+          .eq('user_id', userId)
+          .order('uploaded_at', { ascending: false })
+          .limit(3);
+
+        if (uploads) {
+          uploads.forEach(u => {
+            activities.push({
+              id: `upload-${u.id}`,
+              type: 'upload',
+              message: `${u.file_name} Uploaded`,
+              date: new Date(u.uploaded_at)
+            });
+          });
+        }
+
+        // Sort by date and take latest 3
+        const sorted = activities.sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 3);
+        setRecentActivities(sorted);
+      } catch (err) {
+        console.error('Failed to fetch recent activities:', err);
+      }
+    };
+
+    fetchActivities();
+  }, []);
 
   const handleLogout = async () => {
     // #region agent log
@@ -79,12 +152,6 @@ export default function PatientDashboard() {
 
       {/* Content */}
       <div className="max-w-md mx-auto p-4 pt-6 space-y-6">
-        {/* Welcome Card */}
-        <div className="bg-gradient-to-r from-teal-500 to-teal-400 rounded-2xl p-6 text-white shadow-lg">
-          <h2 className="text-xl mb-2">Welcome Back!</h2>
-          <p className="text-sm text-teal-50">Your health records are safe and secure</p>
-        </div>
-
         {/* Quick Actions */}
         <div>
           <h3 className="text-gray-700 mb-3">Quick Access</h3>
@@ -135,29 +202,40 @@ export default function PatientDashboard() {
         <div>
           <h3 className="text-gray-700 mb-3">Recent Activity</h3>
           <div className="space-y-2">
-            <div className="bg-white rounded-xl p-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0">
-                  <FileText className="w-5 h-5 text-blue-600" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-800">Blood Test Report Uploaded</p>
-                  <p className="text-xs text-gray-500">2 days ago</p>
-                </div>
+            {recentActivities.length === 0 ? (
+              <div className="bg-white rounded-xl p-4 shadow-sm text-center">
+                <p className="text-sm text-gray-500">No recent activity</p>
               </div>
-            </div>
-
-            <div className="bg-white rounded-xl p-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center flex-shrink-0">
-                  <Calendar className="w-5 h-5 text-green-600" />
+            ) : (
+              recentActivities.map(activity => (
+                <div key={activity.id} className="bg-white rounded-xl p-4 shadow-sm">
+                  <div className="flex items-start gap-3">
+                    <div className={`w-10 h-10 rounded-full ${activity.type === 'visit' ? 'bg-green-50' : 'bg-blue-50'} flex items-center justify-center flex-shrink-0`}>
+                      {activity.type === 'visit' ? (
+                        <Calendar className="w-5 h-5 text-green-600" />
+                      ) : (
+                        <Upload className="w-5 h-5 text-blue-600" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-800">{activity.message}</p>
+                      <p className="text-xs text-gray-500">
+                        {(() => {
+                          const now = new Date();
+                          const diff = now.getTime() - activity.date.getTime();
+                          const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                          const hours = Math.floor(diff / (1000 * 60 * 60));
+                          if (hours < 1) return 'Just now';
+                          if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+                          if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+                          return activity.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        })()}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-800">Doctor Visit - General Checkup</p>
-                  <p className="text-xs text-gray-500">5 days ago</p>
-                </div>
-              </div>
-            </div>
+              ))
+            )}
           </div>
         </div>
       </div>

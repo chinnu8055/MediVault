@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, FolderOpen, Upload, FileText, AlertCircle, History, Calendar } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Upload, FileText, AlertCircle, History, Calendar, Trash2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'sonner';
 
@@ -29,6 +29,7 @@ export default function MyRecords() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadCategory, setUploadCategory] = useState<string>('');
   const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Fetch user uploads on mount
   useEffect(() => {
@@ -142,6 +143,49 @@ export default function MyRecords() {
     } catch (err: any) {
       console.error('Failed to view file:', err);
       toast.error('Failed to open file');
+    }
+  };
+
+  const handleDeleteFile = async (upload: UserUpload) => {
+    if (!upload.file_path) {
+      toast.error('File path not found');
+      return;
+    }
+
+    try {
+      setDeletingId(upload.id);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) {
+        throw new Error('Not signed in');
+      }
+
+      const { error: storageError } = await supabase.storage
+        .from('patient-uploads')
+        .remove([upload.file_path]);
+
+      if (storageError) {
+        throw storageError;
+      }
+
+      const { error: dbError } = await supabase
+        .from('user_uploads')
+        .delete()
+        .eq('id', upload.id)
+        .eq('user_id', userId);
+
+      if (dbError) {
+        throw dbError;
+      }
+
+      setUserUploads(prev => prev.filter(u => u.id !== upload.id));
+      toast.success('File deleted');
+    } catch (err: any) {
+      console.error('Failed to delete file:', err);
+      toast.error(err?.message || 'Failed to delete file');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -312,9 +356,23 @@ export default function MyRecords() {
                     <div className="flex-1">
                       <div className="flex items-start justify-between mb-1">
                         <p className="text-gray-800">{upload.name}</p>
-                        <span className="px-2 py-0.5 rounded text-xs bg-amber-50 text-amber-700">
-                          Uploaded by Patient
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-xs bg-amber-50 text-amber-700">
+                            Uploaded by Patient
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteFile(upload);
+                            }}
+                            disabled={deletingId === upload.id}
+                            className="text-xs text-red-600 hover:text-red-700 flex items-center gap-1 disabled:opacity-50"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            {deletingId === upload.id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </div>
                       </div>
                       <div className="flex items-center gap-2 mt-1">
                         <p className="text-xs text-gray-500">{new Date(upload.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
