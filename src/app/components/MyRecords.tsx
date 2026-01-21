@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, FolderOpen, Upload, FileText, AlertCircle, History, Calendar } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface Record {
   id: string;
@@ -15,6 +17,7 @@ interface UserUpload {
   date: string;
   category: string;
   uploadedBy: string;
+  file_path?: string;
 }
 
 export default function MyRecords() {
@@ -23,6 +26,124 @@ export default function MyRecords() {
   const [viewSection, setViewSection] = useState<'main' | 'reports' | 'userUploads'>('main');
   const [reportFilter, setReportFilter] = useState<string>('all');
   const [uploadDocumentDate, setUploadDocumentDate] = useState<string>('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadCategory, setUploadCategory] = useState<string>('');
+  const [uploading, setUploading] = useState(false);
+
+  // Fetch user uploads on mount
+  useEffect(() => {
+    if (viewSection === 'userUploads') {
+      fetchUserUploads();
+    }
+  }, [viewSection]);
+
+  const fetchUserUploads = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase
+        .from('user_uploads')
+        .select('*')
+        .eq('user_id', userId)
+        .order('uploaded_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        const formatted: UserUpload[] = data.map(upload => ({
+          id: upload.id,
+          name: upload.file_name,
+          date: upload.report_date || upload.uploaded_at.split('T')[0],
+          category: upload.category || 'General',
+          uploadedBy: 'patient',
+          file_path: upload.file_path
+        }));
+        setUserUploads(formatted);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch uploads:', err);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile || !uploadCategory || !uploadDocumentDate) return;
+
+    setUploading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) {
+        toast.error('Please sign in to upload');
+        return;
+      }
+
+      // Upload to storage
+      const uniqueName = `${crypto.randomUUID()}-${selectedFile.name}`;
+      const path = `${userId}/${uniqueName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('patient-uploads')
+        .upload(path, selectedFile, {
+          cacheControl: '3600',
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      // Save metadata to database
+      const { error: dbError } = await supabase
+        .from('user_uploads')
+        .insert({
+          user_id: userId,
+          file_name: selectedFile.name,
+          file_path: path,
+          mime_type: selectedFile.type,
+          size_bytes: selectedFile.size,
+          category: uploadCategory,
+          report_date: uploadDocumentDate,
+        });
+
+      if (dbError) throw dbError;
+
+      toast.success('File uploaded successfully');
+      setShowUpload(false);
+      setUploadDocumentDate('');
+      setSelectedFile(null);
+      setUploadCategory('');
+
+      // Refresh the list
+      fetchUserUploads();
+    } catch (err: any) {
+      console.error('Upload failed:', err);
+      toast.error(err.message || 'Failed to upload file');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleViewFile = async (upload: UserUpload) => {
+    if (!upload.file_path) {
+      toast.error('File path not found');
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.storage
+        .from('patient-uploads')
+        .createSignedUrl(upload.file_path, 3600); // 1 hour expiry
+
+      if (error) throw error;
+
+      if (data?.signedUrl) {
+        window.open(data.signedUrl, '_blank');
+      }
+    } catch (err: any) {
+      console.error('Failed to view file:', err);
+      toast.error('Failed to open file');
+    }
+  };
 
   // Mock reports data (lab reports, radiology, etc.)
   const records: Record[] = [
@@ -33,11 +154,8 @@ export default function MyRecords() {
     { id: '5', name: 'Lipid Profile', date: '2024-11-15', category: 'Cardiology' },
   ];
 
-  // User-uploaded documents (separate from doctor-added)
-  const userUploads: UserUpload[] = [
-    { id: 'u1', name: 'Previous Dental X-Ray', date: '2023-08-15', category: 'Dental', uploadedBy: 'patient' },
-    { id: 'u2', name: 'Old Blood Report', date: '2023-06-20', category: 'General', uploadedBy: 'patient' },
-  ];
+  // User-uploaded documents (fetched from database)
+  const [userUploads, setUserUploads] = useState<UserUpload[]>([]);
 
   // Sort reports by date (most recent first)
   const sortedReports = [...records].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -87,7 +205,7 @@ export default function MyRecords() {
               {viewSection === 'reports' ? 'Reports' : viewSection === 'userUploads' ? 'Uploaded by You' : 'My Records'}
             </h1>
           </div>
-          {viewSection !== 'main' && (
+          {viewSection === 'userUploads' && (
             <button 
               onClick={() => setShowUpload(true)}
               className="px-3 py-2 rounded-xl bg-blue-50 text-blue-600 text-sm hover:bg-blue-100 flex items-center gap-1"
@@ -182,7 +300,11 @@ export default function MyRecords() {
               </div>
             ) : (
               sortedUserUploads.map(upload => (
-                <div key={upload.id} className="bg-white rounded-xl p-4 shadow-sm border-l-4 border-amber-400">
+                <div
+                  key={upload.id}
+                  onClick={() => handleViewFile(upload)}
+                  className="bg-white rounded-xl p-4 shadow-sm border-l-4 border-amber-400 cursor-pointer hover:shadow-md transition-shadow"
+                >
                   <div className="flex items-start gap-3">
                     <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center flex-shrink-0">
                       <FileText className="w-5 h-5 text-amber-600" />
@@ -256,7 +378,11 @@ export default function MyRecords() {
             <div className="space-y-4">
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">Category *</label>
-                <select className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <select
+                  value={uploadCategory}
+                  onChange={(e) => setUploadCategory(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
                   <option value="">Select Category</option>
                   <option>Dental</option>
                   <option>Gynecology</option>
@@ -280,30 +406,42 @@ export default function MyRecords() {
               </div>
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">Upload File (PDF/Image) *</label>
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-blue-300 transition-colors cursor-pointer">
+                <input
+                  type="file"
+                  id="file-upload"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="file-upload"
+                  className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-blue-300 transition-colors cursor-pointer block"
+                >
                   <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                  <p className="text-sm text-gray-600">Click to upload or drag and drop</p>
+                  <p className="text-sm text-gray-600">
+                    {selectedFile ? selectedFile.name : 'Click to upload or drag and drop'}
+                  </p>
                   <p className="text-xs text-gray-400 mt-1">PDF, JPG, PNG up to 10MB</p>
-                </div>
+                </label>
               </div>
               <div className="flex gap-3">
                 <button
                   onClick={() => {
                     setShowUpload(false);
                     setUploadDocumentDate('');
+                    setSelectedFile(null);
+                    setUploadCategory('');
                   }}
                   className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={() => {
-                    setShowUpload(false);
-                    setUploadDocumentDate('');
-                  }}
-                  className="flex-1 px-4 py-3 rounded-xl bg-blue-500 text-white hover:bg-blue-600"
+                  onClick={handleUpload}
+                  className="flex-1 px-4 py-3 rounded-xl bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!selectedFile || !uploadCategory || !uploadDocumentDate || uploading}
                 >
-                  Upload
+                  {uploading ? 'Uploading...' : 'Upload'}
                 </button>
               </div>
             </div>

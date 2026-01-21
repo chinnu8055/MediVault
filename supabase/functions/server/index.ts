@@ -9,15 +9,27 @@ const supa = () =>
 
 /**
  * Generate a unique alphanumeric access code
- * Format: 8-12 characters of uppercase letters and numbers
+ * Format: XXX-NNN-XXX (3 letters, 3 numbers, 3 letters)
  */
 function generateAccessCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const numbers = "0123456789";
+  
   let code = "";
-  const length = 8 + Math.floor(Math.random() * 5); // 8-12 characters
-
-  for (let i = 0; i < length; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  
+  // First 3 letters
+  for (let i = 0; i < 3; i++) {
+    code += letters.charAt(Math.floor(Math.random() * letters.length));
+  }
+  
+  // 3 numbers
+  for (let i = 0; i < 3; i++) {
+    code += numbers.charAt(Math.floor(Math.random() * numbers.length));
+  }
+  
+  // Last 3 letters
+  for (let i = 0; i < 3; i++) {
+    code += letters.charAt(Math.floor(Math.random() * letters.length));
   }
 
   return code;
@@ -98,6 +110,8 @@ async function handleRevokeCode(req: Request): Promise<Response> {
     const body = await req.json();
     const code = body.code?.trim();
 
+    console.log('Revoke request - Code received:', code);
+
     if (!code) {
       return new Response(
         JSON.stringify({ error: "Access code is required" }),
@@ -106,6 +120,8 @@ async function handleRevokeCode(req: Request): Promise<Response> {
     }
 
     const codeData = await kv.get(`access_code:${code}`);
+    console.log('Code data found:', !!codeData);
+
     if (!codeData) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired code" }),
@@ -203,17 +219,28 @@ async function handleClaimCode(req: Request): Promise<Response> {
     let patient_unique_id = "";
     try {
       if (codeData.patient_id) {
+        console.log("Looking up patient with ID:", codeData.patient_id);
         const { data: profile, error: pErr } = await supa()
           .from("user_profiles")
           .select("name, unique_id")
-          .eq("user_id", codeData.patient_id)
+          .eq("id", codeData.patient_id)
           .maybeSingle();
+        
+        console.log("Patient lookup result:", { profile, error: pErr });
+        
         if (!pErr && profile) {
           patient_name = profile.name || patient_name;
           patient_unique_id = profile.unique_id || patient_unique_id;
+          console.log("Patient found:", { patient_name, patient_unique_id });
+        } else {
+          console.log("Patient not found or error:", pErr);
         }
+      } else {
+        console.log("No patient_id in codeData");
       }
-    } catch (_) {}
+    } catch (e) {
+      console.log("Exception in patient lookup:", e);
+    }
 
     // Return success response
     return new Response(
@@ -221,6 +248,7 @@ async function handleClaimCode(req: Request): Promise<Response> {
         code,
         patient_name,
         patient_unique_id,
+        patient_id: codeData.patient_id, // Include patient database ID in response
         expires_at: expiresAt.toISOString(),
         claimed_at: now.toISOString(),
       }),
@@ -302,7 +330,7 @@ async function handleGetActiveDoctorAccess(req: Request): Promise<Response> {
     // Fetch claimed codes with doctor info
     const activeDoctorAccess = [];
     const now = new Date();
-    
+
     for (const code of codelist) {
       const codeData = await kv.get(`access_code:${code}`);
       if (codeData && codeData.claimed && !codeData.revoked && new Date(codeData.expires_at) > now) {
@@ -362,33 +390,35 @@ Deno.serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
-    const path = req.headers.get('X-Function-Path') || url.pathname;
+    let path = req.headers.get('X-Function-Path') || url.pathname;
+
+    // Normalize path
+    if (!path.startsWith('/')) path = '/' + path;
 
     console.log(`[${req.method}] ${path}`);
+    console.log('Headers:', {
+      'X-Function-Path': req.headers.get('X-Function-Path'),
+      'Content-Type': req.headers.get('Content-Type'),
+      'method': req.method
+    });
 
-    // Generate access code
-    if (path.includes("/access/share/generate") && req.method === "POST") {
-      return setCorsHeaders(await handleGenerateCode(req));
-    }
-
-    // List access codes
-    if (path.includes("/access/share/list") && req.method === "POST") {
-      return setCorsHeaders(await handleListCodes(req));
-    }
-
-    // Revoke access code
-    if (path.includes("/access/share/revoke") && req.method === "POST") {
-      return setCorsHeaders(await handleRevokeCode(req));
-    }
-
-    // Get active doctor access
-    if (path.includes("/access/share/active") && req.method === "POST") {
-      return setCorsHeaders(await handleGetActiveDoctorAccess(req));
-    }
-
-    // Claim access code
-    if (path.includes("/access/share/claim") && req.method === "POST") {
-      return setCorsHeaders(await handleClaimCode(req));
+    // Route based on path
+    if (req.method === "POST") {
+      if (path.includes("generate")) {
+        return setCorsHeaders(await handleGenerateCode(req));
+      }
+      if (path.includes("list")) {
+        return setCorsHeaders(await handleListCodes(req));
+      }
+      if (path.includes("revoke")) {
+        return setCorsHeaders(await handleRevokeCode(req));
+      }
+      if (path.includes("active")) {
+        return setCorsHeaders(await handleGetActiveDoctorAccess(req));
+      }
+      if (path.includes("claim")) {
+        return setCorsHeaders(await handleClaimCode(req));
+      }
     }
 
     // Health check (default GET request)
@@ -408,7 +438,18 @@ Deno.serve(async (req: Request) => {
 
     // Not found
     return setCorsHeaders(
-      new Response(JSON.stringify({ error: "Not found" }), {
+      new Response(JSON.stringify({ 
+        error: "Not found",
+        received_path: path,
+        method: req.method,
+        available_routes: [
+          "/access/share/generate",
+          "/access/share/list",
+          "/access/share/revoke",
+          "/access/share/active",
+          "/access/share/claim"
+        ]
+      }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
       })

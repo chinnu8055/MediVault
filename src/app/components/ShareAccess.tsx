@@ -43,26 +43,38 @@ export default function ShareAccess() {
       const userId = sessionData.session?.user?.id;
       if (!userId) return;
 
+      // Get the patient's database ID
+      const { data: patientProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (profileError || !patientProfile?.id) return;
+
       const { data, error } = await supabase.functions.invoke('server', {
         headers: {
           'X-Function-Path': '/access/share/list'
         },
         body: { 
-          patient_id: userId 
+          patient_id: patientProfile.id
         }
       });
 
       if (error) throw error;
 
       if (data?.codes) {
-        const formattedCodes: Access[] = data.codes.map((codeData: any) => ({
-          id: crypto.randomUUID(),
-          code: codeData.code,
-          duration: `${codeData.ttl_minutes} min`,
-          createdAt: new Date(codeData.created_at),
-          expiresAt: new Date(codeData.expires_at),
-          status: new Date(codeData.expires_at) > new Date() ? 'active' : 'expired'
-        }));
+        const formattedCodes: Access[] = data.codes
+          // Hide codes that are already claimed/used by a doctor
+          .filter((codeData: any) => !codeData.claimed)
+          .map((codeData: any) => ({
+            id: crypto.randomUUID(),
+            code: codeData.code,
+            duration: `${codeData.ttl_minutes} min`,
+            createdAt: new Date(codeData.created_at),
+            expiresAt: new Date(codeData.expires_at),
+            status: new Date(codeData.expires_at) > new Date() ? 'active' : 'expired'
+          }));
         setAccessCodes(formattedCodes);
       }
     } catch (err: any) {
@@ -76,12 +88,21 @@ export default function ShareAccess() {
       const userId = sessionData.session?.user?.id;
       if (!userId) return;
 
+      // Get the patient's database ID
+      const { data: patientProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (profileError || !patientProfile?.id) return;
+
       const { data, error } = await supabase.functions.invoke('server', {
         headers: {
           'X-Function-Path': '/access/share/active'
         },
         body: { 
-          patient_id: userId 
+          patient_id: patientProfile.id
         }
       });
 
@@ -114,6 +135,21 @@ export default function ShareAccess() {
         return;
       }
 
+      // Get the patient's database ID from their profile
+      const { data: patientProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('id, unique_id, name')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (profileError || !patientProfile?.id) {
+        console.error('Patient profile error or missing ID:', { profileError, patientProfile });
+        toast.error('Could not find patient profile');
+        return;
+      }
+
+      console.log('Patient profile found:', patientProfile);
+
       const ttlMinutes = duration === '1hour' ? 60 : duration === '1day' ? 1440 : 10080; // 1 week
 
       const { data, error } = await supabase.functions.invoke('server', {
@@ -122,7 +158,7 @@ export default function ShareAccess() {
         },
         body: { 
           ttl_minutes: ttlMinutes,
-          patient_id: userId
+          patient_id: patientProfile.id
         }
       });
 
@@ -186,6 +222,10 @@ export default function ShareAccess() {
       setActiveDoctorAccess(prev => prev.filter(a => a.id !== accessId));
       setAccessCodes(prev => prev.filter(c => c.code !== target.code));
       toast.success('Access revoked');
+
+      // Clear doctor's cache so they see updated list immediately
+      localStorage.removeItem('activePatients_cache');
+      localStorage.removeItem('activePatientCount_cache');
 
       // Ensure consistency with backend
       fetchActiveDoctorAccess();

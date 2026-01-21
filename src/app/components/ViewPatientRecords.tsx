@@ -1,7 +1,9 @@
-import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, FileText, Plus, User, AlertCircle, Calendar, Upload, ListFilter, X, Stethoscope } from 'lucide-react';
 import { useApp } from '../App';
+import { supabase } from '../../lib/supabase';
+import { toast } from 'sonner';
 
 interface Medicine {
   name: string;
@@ -35,17 +37,21 @@ interface UserUpload {
   category: string;
   uploadedBy: string;
   type: 'userUpload';
+  file_path?: string;
 }
 
 type PatientRecord = DoctorVisit | LabReport | UserUpload;
 
 export default function ViewPatientRecords() {
   const navigate = useNavigate();
-  const { patientId } = useParams();
+  const location = useLocation();
+  const patientId = location.state?.patientId;
   const { user } = useApp();
   const [showVisitModal, setShowVisitModal] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<PatientRecord | null>(null);
+  const [hasAccess, setHasAccess] = useState<boolean | null>(null);
+  const [accessDenied, setAccessDenied] = useState(false);
   
   // Filter states
   const [typeFilter, setTypeFilter] = useState<'all' | 'report' | 'visit' | 'userUpload'>('all');
@@ -57,55 +63,210 @@ export default function ViewPatientRecords() {
     medicines: [{ name: '', dosage: '', time: [] as string[], duration: '' }] as Medicine[]
   });
 
-  const patientInfo = {
-    name: 'John Doe',
-    id: patientId || 'P123456',
-    age: 35,
-    gender: 'Male'
-  };
+  const [patientInfo, setPatientInfo] = useState({
+    name: 'Patient',
+    id: patientId || '',
+    age: undefined as number | undefined,
+    gender: undefined as string | undefined,
+  });
 
-  // Mock data with dates
-  const labReports: LabReport[] = [
-    { id: '1', name: 'Blood Test Report', date: '2024-12-14', category: 'General', type: 'report' },
-    { id: '2', name: 'ECG Report', date: '2024-12-01', category: 'Cardiology', type: 'report' },
-    { id: '3', name: 'X-Ray Scan', date: '2024-11-28', category: 'Orthopedic', type: 'report' },
-    { id: '4', name: 'Dental X-Ray', date: '2024-11-15', category: 'Dental', type: 'report' }
-  ];
-
-  const doctorVisits: DoctorVisit[] = [
-    {
-      id: '1',
-      date: '2024-12-11',
-      doctor: 'Dr. Sarah Johnson',
-      category: 'General',
-      diagnosis: 'Seasonal allergies',
-      prescription: ['Cetirizine 10mg - Once daily'],
-      type: 'visit'
-    },
-    {
-      id: '2',
-      date: '2024-12-05',
-      doctor: 'Dr. Michael Chen',
-      category: 'Cardiology',
-      diagnosis: 'Routine checkup',
-      prescription: ['Continue regular exercise'],
-      type: 'visit'
-    },
-    {
-      id: '3',
-      date: '2024-11-20',
-      doctor: 'Dr. Sarah Johnson',
-      category: 'General',
-      diagnosis: 'Follow-up consultation',
-      prescription: ['Continue current medication'],
-      type: 'visit'
+  // Redirect if patientId is not provided
+  useEffect(() => {
+    if (!patientId) {
+      navigate('/doctor-dashboard');
     }
-  ];
+  }, [patientId, navigate]);
 
-  const userUploads: UserUpload[] = [
-    { id: 'u1', name: 'Previous Dental X-Ray', date: '2023-08-15', category: 'Dental', uploadedBy: 'patient', type: 'userUpload' },
-    { id: 'u2', name: 'Old Blood Report', date: '2023-06-20', category: 'General', uploadedBy: 'patient', type: 'userUpload' },
-  ];
+  // Records from backend
+  const [labReports] = useState<LabReport[]>([]);
+  const [doctorVisits] = useState<DoctorVisit[]>([]);
+  const [userUploads, setUserUploads] = useState<UserUpload[]>([]);
+
+  // Fetch patient profile (name/id) by unique_id from Supabase
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!patientId) return;
+      try {
+        const { data, error } = await supabase
+          .from('user_profiles')
+          .select('name, unique_id, age, gender')
+          .eq('unique_id', patientId)
+          .maybeSingle();
+        if (!error && data) {
+          setPatientInfo({
+            name: data.name || 'Patient',
+            id: data.unique_id || patientId,
+            age: data.age ?? undefined,
+            gender: data.gender ?? undefined,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to load patient profile', err);
+      }
+    };
+    loadProfile();
+  }, [patientId]);
+
+  // Check if current doctor has access to this patient's records
+  useEffect(() => {
+    const checkAccess = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const doctorId = sessionData.session?.user?.id; // This is the Supabase auth user ID
+        
+        if (!doctorId || !patientId) {
+          console.log('Missing doctorId or patientId', { doctorId, patientId });
+          setAccessDenied(true);
+          setHasAccess(false);
+          return;
+        }
+
+        // Get patient profile to find their database ID
+        const { data: patientData, error: patientError } = await supabase
+          .from('user_profiles')
+          .select('id')
+          .eq('unique_id', patientId)
+          .maybeSingle();
+
+        if (patientError || !patientData?.id) {
+          console.error('Patient not found', patientError);
+          setAccessDenied(true);
+          setHasAccess(false);
+          return;
+        }
+
+        console.log('Checking access for', { patientId, patientDatabaseId: patientData.id, doctorId });
+
+        // Check if doctor has active access to this patient by fetching patient's active access list
+        const { data, error } = await supabase.functions.invoke('server', {
+          headers: {
+            'X-Function-Path': '/access/share/active'
+          },
+          body: {
+            patient_id: patientData.id
+          }
+        });
+
+        if (error) {
+          console.error('Access verification error', error);
+          setAccessDenied(true);
+          setHasAccess(false);
+          return;
+        }
+
+        console.log('Active access list', { data });
+
+        // Check if current doctor is in the active access list by checking claimed_by field
+        if (data?.active_access && Array.isArray(data.active_access)) {
+          console.log('Active access array:', data.active_access.map((access: any) => ({ claimed_by: access.claimed_by, doctor_name: access.doctor_name })));
+          const doctorAccess = data.active_access.find((access: any) => access.claimed_by === doctorId);
+          console.log('Doctor access found:', { doctorAccess, doctorId, allClaimedBys: data.active_access.map((a: any) => a.claimed_by) });
+          if (doctorAccess) {
+            setHasAccess(true);
+          } else {
+            console.log('Doctor not in active access list');
+            // Clear cache when access is denied
+            localStorage.removeItem('activePatients_cache');
+            localStorage.removeItem('activePatientCount_cache');
+            setAccessDenied(true);
+            setHasAccess(false);
+          }
+        } else {
+          console.log('No active access records');
+          // Clear cache when access is denied
+          localStorage.removeItem('activePatients_cache');
+          localStorage.removeItem('activePatientCount_cache');
+          setAccessDenied(true);
+          setHasAccess(false);
+        }
+      } catch (err) {
+        console.error('Failed to verify access', err);
+        // Clear cache on error to be safe
+        localStorage.removeItem('activePatients_cache');
+        localStorage.removeItem('activePatientCount_cache');
+        setAccessDenied(true);
+        setHasAccess(false);
+      }
+    };
+
+    checkAccess();
+  }, [patientId]);
+
+  // Fetch patient's uploaded files after access is verified
+  useEffect(() => {
+    const fetchPatientUploads = async () => {
+      if (!hasAccess || !patientId) return;
+
+      try {
+        console.log('Fetching uploads for patient:', patientId);
+        
+        // Get patient's auth user_id from their unique_id
+        const { data: patientData, error: patientError } = await supabase
+          .from('user_profiles')
+          .select('user_id')
+          .eq('unique_id', patientId)
+          .maybeSingle();
+
+        console.log('Patient data:', patientData, 'Error:', patientError);
+
+        if (patientError || !patientData?.user_id) {
+          console.error('Failed to get patient user_id', patientError);
+          return;
+        }
+
+        // Fetch patient's uploads
+        const { data, error } = await supabase
+          .from('user_uploads')
+          .select('*')
+          .eq('user_id', patientData.user_id)
+          .order('uploaded_at', { ascending: false });
+
+        console.log('User uploads data:', data, 'Error:', error);
+
+        if (error) throw error;
+
+        if (data) {
+          const formatted: UserUpload[] = data.map(upload => ({
+            id: upload.id,
+            name: upload.file_name,
+            date: upload.report_date || upload.uploaded_at.split('T')[0],
+            category: upload.category || 'General',
+            uploadedBy: 'patient',
+            type: 'userUpload' as const,
+            file_path: upload.file_path
+          }));
+          console.log('Formatted uploads:', formatted);
+          setUserUploads(formatted);
+        }
+      } catch (err: any) {
+        console.error('Failed to fetch patient uploads:', err);
+      }
+    };
+
+    fetchPatientUploads();
+  }, [hasAccess, patientId]);
+
+  const handleViewFile = async (upload: UserUpload) => {
+    if (!upload.file_path) {
+      toast.error('File path not found');
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.storage
+        .from('patient-uploads')
+        .createSignedUrl(upload.file_path, 3600); // 1 hour expiry
+
+      if (error) throw error;
+
+      if (data?.signedUrl) {
+        window.open(data.signedUrl, '_blank');
+      }
+    } catch (err: any) {
+      console.error('Failed to view file:', err);
+      toast.error('Failed to open file');
+    }
+  };
 
   // Combine all records and sort by date
   const allRecords: PatientRecord[] = [...labReports, ...doctorVisits, ...userUploads];
@@ -181,6 +342,36 @@ export default function ViewPatientRecords() {
   };
 
   const activeFilterCount = (typeFilter !== 'all' ? 1 : 0) + (categoryFilter !== 'all' ? 1 : 0);
+
+  // Show loading state while checking access
+  if (hasAccess === null) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white flex items-center justify-center">
+        <div className="text-gray-600">Verifying access...</div>
+      </div>
+    );
+  }
+
+  // Show access denied message if doctor doesn't have access
+  if (accessDenied || !hasAccess) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white flex items-center justify-center">
+        <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-md text-center">
+          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">Access Denied</h1>
+          <p className="text-gray-600 mb-6">
+            You no longer have access to this patient's records. The patient may have revoked your access or the access period has expired.
+          </p>
+          <button
+            onClick={() => navigate('/doctor-dashboard')}
+            className="px-6 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600"
+          >
+            Go Back to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
@@ -369,11 +560,11 @@ export default function ViewPatientRecords() {
               <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-100">
                 <div>
                   <p className="text-xs text-gray-500">Age</p>
-                  <p className="text-gray-800">{patientInfo.age} years</p>
+                  <p className="text-gray-800">{patientInfo.age !== undefined ? `${patientInfo.age} years` : '—'}</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-500">Gender</p>
-                  <p className="text-gray-800">{patientInfo.gender}</p>
+                  <p className="text-gray-800">{patientInfo.gender || '—'}</p>
                 </div>
               </div>
               <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100 flex items-start gap-2">
@@ -407,7 +598,13 @@ export default function ViewPatientRecords() {
                   filteredRecords.map(record => (
                     <div
                       key={`${record.type}-${record.id}`}
-                      onClick={() => setSelectedRecord(record)}
+                      onClick={() => {
+                        if (record.type === 'userUpload') {
+                          handleViewFile(record);
+                        } else {
+                          setSelectedRecord(record);
+                        }
+                      }}
                       className={`bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-all cursor-pointer ${
                         record.type === 'userUpload' ? 'border-l-4 border-amber-400' : ''
                       }`}
