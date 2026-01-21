@@ -43,18 +43,45 @@ export default function Notifications() {
         const notifs: Notification[] = [];
         const seenKey = 'seen_notifications';
         const seenIds = JSON.parse(localStorage.getItem(seenKey) || '[]');
+        const dismissedKey = 'dismissed_notifications';
+        const dismissedIds = JSON.parse(localStorage.getItem(dismissedKey) || '[]');
 
         // Add visit notifications
         if (visits) {
           visits.forEach(visit => {
+            const notifId = `visit-${visit.id}`;
+            if (dismissedIds.includes(notifId)) return;
             notifs.push({
-              id: `visit-${visit.id}`,
+              id: notifId,
               type: 'doctor_visit',
               message: 'New Doctor Visit Added',
               source: visit.doctor_name || 'Doctor',
               date: new Date(visit.created_at),
               read: seenIds.includes(`visit-${visit.id}`),
               relatedId: visit.id
+            });
+          });
+        }
+
+        // Fetch lab reports
+        const { data: labReports } = await supabase
+          .from('lab_reports')
+          .select('id, file_name, category, uploaded_at')
+          .eq('patient_unique_id', profile.unique_id)
+          .order('uploaded_at', { ascending: false });
+
+        if (labReports) {
+          labReports.forEach(report => {
+            const notifId = `lab-${report.id}`;
+            if (dismissedIds.includes(notifId)) return;
+            notifs.push({
+              id: notifId,
+              type: 'lab_report',
+              message: 'New Lab Report Added',
+              source: report.file_name || report.category || 'Laboratory',
+              date: new Date(report.uploaded_at),
+              read: seenIds.includes(notifId),
+              relatedId: report.id
             });
           });
         }
@@ -80,7 +107,7 @@ export default function Notifications() {
                   const scheduledHour = medicationTimes[time as keyof typeof medicationTimes];
                   if (scheduledHour && currentHour === scheduledHour) {
                     const medNotifId = `med-${visit.id}-${idx}-${time}-${now.toISOString().split('T')[0]}`;
-                    if (!seenIds.includes(medNotifId)) {
+                    if (!seenIds.includes(medNotifId) && !dismissedIds.includes(medNotifId)) {
                       notifs.push({
                         id: medNotifId,
                         type: 'medication_reminder',

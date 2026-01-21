@@ -9,6 +9,7 @@ interface Record {
   name: string;
   date: string;
   category: string;
+  file_path?: string;
 }
 
 interface UserUpload {
@@ -30,6 +31,8 @@ export default function MyRecords() {
   const [uploadCategory, setUploadCategory] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [labReports, setLabReports] = useState<Record[]>([]);
+  const [loadingReports, setLoadingReports] = useState(false);
 
   // Fetch user uploads on mount
   useEffect(() => {
@@ -37,6 +40,51 @@ export default function MyRecords() {
       fetchUserUploads();
     }
   }, [viewSection]);
+
+  // Fetch lab reports on mount
+  useEffect(() => {
+    fetchLabReports();
+  }, []);
+
+  const fetchLabReports = async () => {
+    setLoadingReports(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('unique_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (profileError || !profile?.unique_id) return;
+
+      const { data, error } = await supabase
+        .from('lab_reports')
+        .select('id, file_name, file_path, category, report_date, uploaded_at')
+        .eq('patient_unique_id', profile.unique_id)
+        .order('uploaded_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        const formatted: Record[] = data.map(report => ({
+          id: report.id,
+          name: report.file_name,
+          date: report.report_date || report.uploaded_at?.split('T')[0],
+          category: report.category || 'General',
+          file_path: report.file_path,
+        }));
+        setLabReports(formatted);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch lab reports:', err);
+    } finally {
+      setLoadingReports(false);
+    }
+  };
 
   const fetchUserUploads = async () => {
     try {
@@ -189,20 +237,32 @@ export default function MyRecords() {
     }
   };
 
-  // Mock reports data (lab reports, radiology, etc.)
-  const records: Record[] = [
-    { id: '1', name: 'Blood Test Report', date: '2024-12-14', category: 'General' },
-    { id: '2', name: 'X-Ray Scan', date: '2024-12-10', category: 'Orthopedic' },
-    { id: '3', name: 'ECG Report', date: '2024-12-01', category: 'Cardiology' },
-    { id: '4', name: 'Complete Blood Count', date: '2024-11-28', category: 'General' },
-    { id: '5', name: 'Lipid Profile', date: '2024-11-15', category: 'Cardiology' },
-  ];
+  const handleViewReport = async (report: Record) => {
+    if (!report.file_path) {
+      toast.error('File not available');
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.storage
+        .from('patient-uploads')
+        .createSignedUrl(report.file_path, 3600);
+
+      if (error) throw error;
+      if (data?.signedUrl) {
+        window.open(data.signedUrl, '_blank');
+      }
+    } catch (err: any) {
+      console.error('Failed to view report:', err);
+      toast.error('Failed to open report');
+    }
+  };
 
   // User-uploaded documents (fetched from database)
   const [userUploads, setUserUploads] = useState<UserUpload[]>([]);
 
   // Sort reports by date (most recent first)
-  const sortedReports = [...records].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const sortedReports = [...labReports].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   
   // Filter reports by category
   const filteredReports = reportFilter === 'all' 
@@ -210,7 +270,7 @@ export default function MyRecords() {
     : sortedReports.filter(r => r.category.toLowerCase() === reportFilter);
   
   // Get unique categories from reports
-  const reportCategories = Array.from(new Set(records.map(r => r.category)));
+  const reportCategories = Array.from(new Set(labReports.map(r => r.category)));
 
   // Sort user uploads by date (most recent first)
   const sortedUserUploads = [...userUploads].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -283,51 +343,62 @@ export default function MyRecords() {
 
             {/* Reports List */}
             <div className="space-y-3">
-              {filteredReports.map(report => (
-                <div key={report.id} className="bg-white rounded-xl p-4 shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
-                      <FileText className="w-5 h-5 text-blue-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-gray-800">{report.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <p className="text-xs text-gray-500">{new Date(report.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                        <span className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 text-xs">
-                          {report.category}
-                        </span>
-                      </div>
-                      
-                      {/* AI Summary Card */}
-                      <div className="mt-3 p-3 bg-purple-50 rounded-lg border border-purple-100">
-                        <div className="flex items-start gap-2 mb-2">
-                          <div className="w-5 h-5 rounded bg-purple-100 flex items-center justify-center flex-shrink-0">
-                            <span className="text-xs text-purple-600">AI</span>
+              {loadingReports ? (
+                <div className="text-center py-12 text-gray-500">Loading reports...</div>
+              ) : (
+                <>
+                  {filteredReports.map(report => (
+                    <div
+                      key={report.id}
+                      className="bg-white rounded-xl p-4 shadow-sm border border-transparent hover:border-blue-200 cursor-pointer transition"
+                      onClick={() => handleViewReport(report)}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+                          <FileText className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-gray-800">{report.name}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <p className="text-xs text-gray-500">{new Date(report.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                            <span className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 text-xs">
+                              {report.category}
+                            </span>
                           </div>
-                          <p className="text-xs text-purple-900">Summary</p>
-                        </div>
-                        <p className="text-xs text-purple-800 leading-relaxed">
-                          Blood glucose: <span className="bg-red-100 text-red-700 px-1 rounded">145 mg/dL (High)</span> - Monitoring needed. Cholesterol levels normal.
-                        </p>
-                        <div className="mt-2 pt-2 border-t border-purple-200 flex items-start gap-1">
-                          <AlertCircle className="w-3 h-3 text-purple-600 flex-shrink-0 mt-0.5" />
-                          <p className="text-xs text-purple-600 italic">
-                            AI is not a medical professional. Consult your doctor for advice.
-                          </p>
+                          <p className="text-xs text-gray-500 mt-2">Tap to view report</p>
+                          
+                          {/* AI Summary Card */}
+                          <div className="mt-3 p-3 bg-purple-50 rounded-lg border border-purple-100">
+                            <div className="flex items-start gap-2 mb-2">
+                              <div className="w-5 h-5 rounded bg-purple-100 flex items-center justify-center flex-shrink-0">
+                                <span className="text-xs text-purple-600">AI</span>
+                              </div>
+                              <p className="text-xs text-purple-900">Summary</p>
+                            </div>
+                            <p className="text-xs text-purple-800 leading-relaxed">
+                              Blood glucose: <span className="bg-red-100 text-red-700 px-1 rounded">145 mg/dL (High)</span> - Monitoring needed. Cholesterol levels normal.
+                            </p>
+                            <div className="mt-2 pt-2 border-t border-purple-200 flex items-start gap-1">
+                              <AlertCircle className="w-3 h-3 text-purple-600 flex-shrink-0 mt-0.5" />
+                              <p className="text-xs text-purple-600 italic">
+                                AI is not a medical professional. Consult your doctor for advice.
+                              </p>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </div>
-              ))}
-              
-              {filteredReports.length === 0 && (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
-                  </div>
-                  <p className="text-gray-500">No reports in this category</p>
-                </div>
+                  ))}
+                  
+                  {filteredReports.length === 0 && (
+                    <div className="text-center py-12">
+                      <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
+                        <FileText className="w-8 h-8 text-gray-400" />
+                      </div>
+                      <p className="text-gray-500">No reports in this category</p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -401,7 +472,7 @@ export default function MyRecords() {
                 <div className="text-left">
                   <p className="text-gray-800">Reports</p>
                   <p className="text-xs text-gray-500">
-                    {records.length} {records.length === 1 ? 'report' : 'reports'}
+                    {labReports.length} {labReports.length === 1 ? 'report' : 'reports'}
                   </p>
                 </div>
               </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload } from 'lucide-react';
+import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload, FlaskConical } from 'lucide-react';
 import { useApp } from '../App';
 import { supabase } from '../../lib/supabase';
 
@@ -9,7 +9,7 @@ export default function PatientDashboard() {
   const { user, setUser } = useApp();
   const [recentActivities, setRecentActivities] = useState<Array<{
     id: string;
-    type: 'visit' | 'upload';
+    type: 'visit' | 'upload' | 'lab_report';
     message: string;
     date: Date;
   }>>([]);
@@ -58,7 +58,7 @@ export default function PatientDashboard() {
 
         if (!profile?.unique_id) return;
 
-        const activities: Array<{ id: string; type: 'visit' | 'upload'; message: string; date: Date }> = [];
+        const activities: Array<{ id: string; type: 'visit' | 'upload' | 'lab_report'; message: string; date: Date }> = [];
 
         // Fetch doctor visits
         const { data: visits } = await supabase
@@ -94,6 +94,25 @@ export default function PatientDashboard() {
               type: 'upload',
               message: `${u.file_name} Uploaded`,
               date: new Date(u.uploaded_at)
+            });
+          });
+        }
+
+        // Fetch lab reports
+        const { data: labReports } = await supabase
+          .from('lab_reports')
+          .select('id, file_name, category, uploaded_at')
+          .eq('patient_unique_id', profile.unique_id)
+          .order('uploaded_at', { ascending: false })
+          .limit(3);
+
+        if (labReports) {
+          labReports.forEach(report => {
+            activities.push({
+              id: `lab-${report.id}`,
+              type: 'lab_report',
+              message: `${report.file_name || 'Lab Report'} (${report.category || 'General'}) uploaded`,
+              date: new Date(report.uploaded_at)
             });
           });
         }
@@ -207,34 +226,43 @@ export default function PatientDashboard() {
                 <p className="text-sm text-gray-500">No recent activity</p>
               </div>
             ) : (
-              recentActivities.map(activity => (
-                <div key={activity.id} className="bg-white rounded-xl p-4 shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className={`w-10 h-10 rounded-full ${activity.type === 'visit' ? 'bg-green-50' : 'bg-blue-50'} flex items-center justify-center flex-shrink-0`}>
-                      {activity.type === 'visit' ? (
-                        <Calendar className="w-5 h-5 text-green-600" />
-                      ) : (
-                        <Upload className="w-5 h-5 text-blue-600" />
-                      )}
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-800">{activity.message}</p>
-                      <p className="text-xs text-gray-500">
-                        {(() => {
-                          const now = new Date();
-                          const diff = now.getTime() - activity.date.getTime();
-                          const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-                          const hours = Math.floor(diff / (1000 * 60 * 60));
-                          if (hours < 1) return 'Just now';
-                          if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-                          if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
-                          return activity.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                        })()}
-                      </p>
+              recentActivities.map(activity => {
+                const isVisit = activity.type === 'visit';
+                const isLab = activity.type === 'lab_report';
+                const bgClass = isVisit ? 'bg-green-50' : isLab ? 'bg-indigo-50' : 'bg-blue-50';
+                const icon = isVisit ? (
+                  <Calendar className="w-5 h-5 text-green-600" />
+                ) : isLab ? (
+                  <FlaskConical className="w-5 h-5 text-indigo-600" />
+                ) : (
+                  <Upload className="w-5 h-5 text-blue-600" />
+                );
+
+                return (
+                  <div key={activity.id} className="bg-white rounded-xl p-4 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className={`w-10 h-10 rounded-full ${bgClass} flex items-center justify-center flex-shrink-0`}>
+                        {icon}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm text-gray-800">{activity.message}</p>
+                        <p className="text-xs text-gray-500">
+                          {(() => {
+                            const now = new Date();
+                            const diff = now.getTime() - activity.date.getTime();
+                            const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                            const hours = Math.floor(diff / (1000 * 60 * 60));
+                            if (hours < 1) return 'Just now';
+                            if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+                            if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+                            return activity.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                          })()}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
