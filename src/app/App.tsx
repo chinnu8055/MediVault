@@ -17,6 +17,7 @@ import UploadOldDocuments from './components/UploadOldDocuments';
 import VisitHistory from './components/VisitHistory';
 import ActivePatients from './components/ActivePatients';
 import SupabaseSetup from './components/SupabaseSetup';
+import PatientVisitLookup from './components/PatientVisitLookup';
 
 interface User {
   id: string;
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/notifications" element={<ProtectedRoute element={<Notifications />} />} />
           <Route path="/upload-old-documents" element={<ProtectedRoute element={<UploadOldDocuments />} />} />
           <Route path="/visit-history" element={<ProtectedRoute element={<VisitHistory />} />} />
+          <Route path="/patient-visit-lookup" element={<ProtectedRoute element={<PatientVisitLookup />} />} />
           <Route path="/supabase-setup" element={<SupabaseSetup />} />
         </Routes>
       </BrowserRouter>

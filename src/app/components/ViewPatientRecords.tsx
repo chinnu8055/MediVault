@@ -22,6 +22,11 @@ interface DoctorVisit {
   prescription: string[];
   type: 'visit';
   doctor_id?: string;
+  blood_pressure_systolic?: number | null;
+  blood_pressure_diastolic?: number | null;
+  blood_glucose?: number | null;
+  weight_kg?: number | null;
+  height_cm?: number | null;
 }
 
 interface LabReport {
@@ -63,7 +68,12 @@ export default function ViewPatientRecords() {
   const [visitData, setVisitData] = useState({
     category: '',
     diagnosis: '',
-    medicines: [{ name: '', dosage: '', time: [] as string[], duration: '', instructions: '' }] as Medicine[]
+    medicines: [{ name: '', dosage: '', time: [] as string[], duration: '', instructions: '' }] as Medicine[],
+    blood_pressure_systolic: '',
+    blood_pressure_diastolic: '',
+    blood_glucose: '',
+    weight_kg: '',
+    height_cm: ''
   });
   const [visitDate, setVisitDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [deletingVisitId, setDeletingVisitId] = useState<string | null>(null);
@@ -260,10 +270,16 @@ export default function ViewPatientRecords() {
       if (!hasAccess || !patientId) return;
 
       try {
+        // Calculate date range for past 2 days
+        const today = new Date();
+        const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000);
+        
         const { data, error } = await supabase
           .from('doctor_visits')
           .select('*')
           .eq('patient_unique_id', patientId)
+          .gte('visit_date', twoDaysAgo.toISOString())
+          .lte('visit_date', today.toISOString())
           .order('visit_date', { ascending: false });
 
         if (error) throw error;
@@ -277,7 +293,12 @@ export default function ViewPatientRecords() {
             diagnosis: v.diagnosis || '',
             prescription: v.prescription || [],
             type: 'visit',
-            doctor_id: v.doctor_id
+            doctor_id: v.doctor_id,
+            blood_pressure_systolic: v.blood_pressure_systolic,
+            blood_pressure_diastolic: v.blood_pressure_diastolic,
+            blood_glucose: v.blood_glucose,
+            weight_kg: v.weight_kg,
+            height_cm: v.height_cm
           }));
           setDoctorVisits(formatted);
         }
@@ -404,6 +425,20 @@ export default function ViewPatientRecords() {
     setVisitData({ ...visitData, medicines: newMeds });
   };
 
+  const toNumberOrNull = (value: string) => {
+    if (value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const hasVitals = (visit: DoctorVisit) => (
+    visit.blood_pressure_systolic !== null && visit.blood_pressure_systolic !== undefined ||
+    visit.blood_pressure_diastolic !== null && visit.blood_pressure_diastolic !== undefined ||
+    visit.blood_glucose !== null && visit.blood_glucose !== undefined ||
+    visit.weight_kg !== null && visit.weight_kg !== undefined ||
+    visit.height_cm !== null && visit.height_cm !== undefined
+  );
+
   const handleEditVisit = (visit: DoctorVisit) => {
     // Parse prescription back to medicines format
     const medicines: Medicine[] = visit.prescription.map(p => {
@@ -424,7 +459,12 @@ export default function ViewPatientRecords() {
     setVisitData({
       category: visit.category,
       diagnosis: visit.diagnosis,
-      medicines: medicines.length > 0 ? medicines : [{ name: '', dosage: '', time: [], duration: '', instructions: '' }]
+      medicines: medicines.length > 0 ? medicines : [{ name: '', dosage: '', time: [], duration: '', instructions: '' }],
+      blood_pressure_systolic: visit.blood_pressure_systolic?.toString() || '',
+      blood_pressure_diastolic: visit.blood_pressure_diastolic?.toString() || '',
+      blood_glucose: visit.blood_glucose?.toString() || '',
+      weight_kg: visit.weight_kg?.toString() || '',
+      height_cm: visit.height_cm?.toString() || ''
     });
     setShowVisitModal(true);
   };
@@ -469,12 +509,6 @@ export default function ViewPatientRecords() {
       return;
     }
 
-    const hasValidMedicine = visitData.medicines.some(m => m.name.trim() && m.dosage && m.time.length > 0 && m.duration);
-    if (!hasValidMedicine) {
-      toast.error('Add at least one medicine with details');
-      return;
-    }
-
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const doctorId = sessionData.session?.user?.id;
@@ -489,13 +523,25 @@ export default function ViewPatientRecords() {
         .maybeSingle();
 
       const doctorName = doctorProfile?.name || 'Doctor';
-      const prescription = visitData.medicines.map(m => {
+      const filteredMeds = visitData.medicines.filter(m =>
+        m.name.trim() || m.dosage.trim() || m.duration.trim() || m.time.length > 0 || (m.instructions && m.instructions.trim())
+      );
+
+      const prescription = filteredMeds.map(m => {
         let prescStr = `${m.name} - ${m.dosage} - ${m.duration} days (${m.time.join(', ')})`;
         if (m.instructions && m.instructions.trim()) {
           prescStr += ` - ${m.instructions}`;
         }
         return prescStr;
       });
+
+      const vitalsPayload = {
+        blood_pressure_systolic: toNumberOrNull(visitData.blood_pressure_systolic),
+        blood_pressure_diastolic: toNumberOrNull(visitData.blood_pressure_diastolic),
+        blood_glucose: toNumberOrNull(visitData.blood_glucose),
+        weight_kg: toNumberOrNull(visitData.weight_kg),
+        height_cm: toNumberOrNull(visitData.height_cm)
+      };
 
       if (editingVisitId) {
         // Update existing visit
@@ -506,6 +552,7 @@ export default function ViewPatientRecords() {
             diagnosis: visitData.diagnosis,
             prescription,
             visit_date: visitDate
+            // ...vitalsPayload  // Uncomment after running vitals schema migration
           })
           .eq('id', editingVisitId)
           .eq('doctor_id', doctorId)
@@ -522,7 +569,12 @@ export default function ViewPatientRecords() {
           diagnosis: data?.diagnosis || visitData.diagnosis,
           prescription: data?.prescription || prescription,
           type: 'visit',
-          doctor_id: doctorId
+          doctor_id: doctorId,
+          blood_pressure_systolic: data?.blood_pressure_systolic ?? vitalsPayload.blood_pressure_systolic,
+          blood_pressure_diastolic: data?.blood_pressure_diastolic ?? vitalsPayload.blood_pressure_diastolic,
+          blood_glucose: data?.blood_glucose ?? vitalsPayload.blood_glucose,
+          weight_kg: data?.weight_kg ?? vitalsPayload.weight_kg,
+          height_cm: data?.height_cm ?? vitalsPayload.height_cm
         };
 
         setDoctorVisits(prev => prev.map(v => v.id === editingVisitId ? updatedVisit : v));
@@ -540,6 +592,7 @@ export default function ViewPatientRecords() {
             diagnosis: visitData.diagnosis,
             prescription,
             visit_date: visitDate
+            // ...vitalsPayload  // Uncomment after running vitals schema migration
           })
           .select()
           .maybeSingle();
@@ -554,16 +607,47 @@ export default function ViewPatientRecords() {
           diagnosis: data?.diagnosis || visitData.diagnosis,
           prescription: data?.prescription || prescription,
           type: 'visit',
-          doctor_id: doctorId
+          doctor_id: doctorId,
+          blood_pressure_systolic: data?.blood_pressure_systolic ?? vitalsPayload.blood_pressure_systolic,
+          blood_pressure_diastolic: data?.blood_pressure_diastolic ?? vitalsPayload.blood_pressure_diastolic,
+          blood_glucose: data?.blood_glucose ?? vitalsPayload.blood_glucose,
+          weight_kg: data?.weight_kg ?? vitalsPayload.weight_kg,
+          height_cm: data?.height_cm ?? vitalsPayload.height_cm
         };
 
         setDoctorVisits(prev => [newVisit, ...prev]);
         toast.success('Visit added');
       }
 
+      // Update patient's latest vitals in their profile
+      if (vitalsPayload.blood_pressure_systolic || vitalsPayload.blood_pressure_diastolic || 
+          vitalsPayload.blood_glucose || vitalsPayload.weight_kg || vitalsPayload.height_cm) {
+        
+        await supabase
+          .from('user_profiles')
+          .update({
+            latest_bp_systolic: vitalsPayload.blood_pressure_systolic,
+            latest_bp_diastolic: vitalsPayload.blood_pressure_diastolic,
+            latest_blood_glucose: vitalsPayload.blood_glucose,
+            latest_weight_kg: vitalsPayload.weight_kg,
+            latest_height_cm: vitalsPayload.height_cm,
+            latest_vitals_date: visitDate
+          })
+          .eq('unique_id', patientId);
+      }
+
       setShowVisitModal(false);
       setEditingVisitId(null);
-      setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }] });
+      setVisitData({
+        category: '',
+        diagnosis: '',
+        medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }],
+        blood_pressure_systolic: '',
+        blood_pressure_diastolic: '',
+        blood_glucose: '',
+        weight_kg: '',
+        height_cm: ''
+      });
       setVisitDate(new Date().toISOString().split('T')[0]);
     } catch (err: any) {
       console.error('Failed to save visit:', err);
@@ -741,6 +825,44 @@ export default function ViewPatientRecords() {
                 </div>
 
                 <div className="space-y-4">
+                  {hasVitals(selectedRecord) && (
+                    <div className="bg-green-50 rounded-xl p-4 border border-green-100">
+                      <p className="text-sm text-green-900 mb-3">Vitals recorded during visit</p>
+                      <div className="grid grid-cols-2 gap-3 text-sm text-gray-800">
+                        {selectedRecord.blood_pressure_systolic !== undefined && selectedRecord.blood_pressure_systolic !== null && (
+                          <div>
+                            <p className="text-xs text-gray-500">BP Systolic</p>
+                            <p>{selectedRecord.blood_pressure_systolic} mmHg</p>
+                          </div>
+                        )}
+                        {selectedRecord.blood_pressure_diastolic !== undefined && selectedRecord.blood_pressure_diastolic !== null && (
+                          <div>
+                            <p className="text-xs text-gray-500">BP Diastolic</p>
+                            <p>{selectedRecord.blood_pressure_diastolic} mmHg</p>
+                          </div>
+                        )}
+                        {selectedRecord.blood_glucose !== undefined && selectedRecord.blood_glucose !== null && (
+                          <div>
+                            <p className="text-xs text-gray-500">Blood Glucose</p>
+                            <p>{selectedRecord.blood_glucose} mg/dL</p>
+                          </div>
+                        )}
+                        {selectedRecord.weight_kg !== undefined && selectedRecord.weight_kg !== null && (
+                          <div>
+                            <p className="text-xs text-gray-500">Weight</p>
+                            <p>{selectedRecord.weight_kg} kg</p>
+                          </div>
+                        )}
+                        {selectedRecord.height_cm !== undefined && selectedRecord.height_cm !== null && (
+                          <div>
+                            <p className="text-xs text-gray-500">Height</p>
+                            <p>{selectedRecord.height_cm} cm</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Diagnosis</p>
                     <p className="text-gray-800">{selectedRecord.diagnosis}</p>
@@ -890,6 +1012,22 @@ export default function ViewPatientRecords() {
                             </div>
                             {getTypeBadge(record.type)}
                           </div>
+                          {record.type === 'visit' && hasVitals(record) && (
+                            <div className="flex flex-wrap gap-2 text-xs text-gray-600 mb-1">
+                              {record.blood_pressure_systolic !== null && record.blood_pressure_systolic !== undefined && record.blood_pressure_diastolic !== null && record.blood_pressure_diastolic !== undefined && (
+                                <span className="px-2 py-1 bg-green-50 text-green-700 rounded-md">BP {record.blood_pressure_systolic}/{record.blood_pressure_diastolic} mmHg</span>
+                              )}
+                              {record.blood_glucose !== null && record.blood_glucose !== undefined && (
+                                <span className="px-2 py-1 bg-amber-50 text-amber-700 rounded-md">Glucose {record.blood_glucose} mg/dL</span>
+                              )}
+                              {record.weight_kg !== null && record.weight_kg !== undefined && (
+                                <span className="px-2 py-1 bg-blue-50 text-blue-700 rounded-md">Weight {record.weight_kg} kg</span>
+                              )}
+                              {record.height_cm !== null && record.height_cm !== undefined && (
+                                <span className="px-2 py-1 bg-purple-50 text-purple-700 rounded-md">Height {record.height_cm} cm</span>
+                              )}
+                            </div>
+                          )}
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-xs text-gray-500">
                               {new Date(record.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -1073,6 +1211,66 @@ export default function ViewPatientRecords() {
                 />
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm text-gray-600 mb-1 block">Blood Pressure (Systolic)</label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="e.g., 120"
+                    value={visitData.blood_pressure_systolic}
+                    onChange={(e) => setVisitData({ ...visitData, blood_pressure_systolic: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600 mb-1 block">Blood Pressure (Diastolic)</label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="e.g., 80"
+                    value={visitData.blood_pressure_diastolic}
+                    onChange={(e) => setVisitData({ ...visitData, blood_pressure_diastolic: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600 mb-1 block">Blood Glucose (mg/dL)</label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="e.g., 110"
+                    value={visitData.blood_glucose}
+                    onChange={(e) => setVisitData({ ...visitData, blood_glucose: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm text-gray-600 mb-1 block">Weight (kg)</label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="e.g., 72.5"
+                      value={visitData.weight_kg}
+                      onChange={(e) => setVisitData({ ...visitData, weight_kg: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-600 mb-1 block">Height (cm)</label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="e.g., 170"
+                      value={visitData.height_cm}
+                      onChange={(e) => setVisitData({ ...visitData, height_cm: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm text-gray-600">Medicines</label>
@@ -1158,7 +1356,16 @@ export default function ViewPatientRecords() {
                   onClick={() => {
                     setShowVisitModal(false);
                     setEditingVisitId(null);
-                    setVisitData({ category: '', diagnosis: '', medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }] });
+                    setVisitData({
+                      category: '',
+                      diagnosis: '',
+                      medicines: [{ name: '', dosage: '', time: [], duration: '', instructions: '' }],
+                      blood_pressure_systolic: '',
+                      blood_pressure_diastolic: '',
+                      blood_glucose: '',
+                      weight_kg: '',
+                      height_cm: ''
+                    });
                     setVisitDate(new Date().toISOString().split('T')[0]);
                   }}
                   className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50"

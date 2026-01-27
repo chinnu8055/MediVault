@@ -1,12 +1,25 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload, FlaskConical } from 'lucide-react';
+import { FileText, Calendar, Share2, Pill, LogOut, User, Bell, Upload, FlaskConical, X, Activity } from 'lucide-react';
 import { useApp } from '../App';
 import { supabase } from '../../lib/supabase';
 
 export default function PatientDashboard() {
   const navigate = useNavigate();
   const { user, setUser } = useApp();
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [patientProfile, setPatientProfile] = useState<{
+    name: string;
+    unique_id: string;
+    age?: number;
+    gender?: string;
+    latest_bp_systolic?: number;
+    latest_bp_diastolic?: number;
+    latest_blood_glucose?: number;
+    latest_weight_kg?: number;
+    latest_height_cm?: number;
+    latest_vitals_date?: string;
+  } | null>(null);
   const [recentActivities, setRecentActivities] = useState<Array<{
     id: string;
     type: 'visit' | 'upload' | 'lab_report';
@@ -140,15 +153,39 @@ export default function PatientDashboard() {
     navigate('/');
   };
 
+  const handleAvatarClick = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('unique_id, name, age, gender, latest_bp_systolic, latest_bp_diastolic, latest_blood_glucose, latest_weight_kg, latest_height_cm, latest_vitals_date')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (profile) {
+        setPatientProfile(profile);
+        setShowProfileModal(true);
+      }
+    } catch (err) {
+      console.error('Failed to fetch patient profile:', err);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-teal-50 to-white">
       {/* Header */}
       <div className="bg-white shadow-sm">
         <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-teal-100 flex items-center justify-center">
+            <button 
+              onClick={handleAvatarClick}
+              className="w-10 h-10 rounded-full bg-teal-100 flex items-center justify-center hover:bg-teal-200 transition-colors cursor-pointer"
+            >
               <User className="w-5 h-5 text-teal-600" />
-            </div>
+            </button>
             <div>
               <h1 className="text-lg text-gray-800">{user?.name || 'Patient'}</h1>
               <p className="text-xs text-gray-500">Patient ID: {user?.unique_id || 'N/A'}</p>
@@ -267,6 +304,103 @@ export default function PatientDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Profile Modal */}
+      {showProfileModal && patientProfile && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl text-gray-800">Patient Profile</h2>
+              <button 
+                onClick={() => setShowProfileModal(false)}
+                className="p-2 hover:bg-gray-100 rounded-full"
+              >
+                <X className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Basic Info */}
+              <div className="bg-teal-50 rounded-xl p-4 border border-teal-100">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-16 h-16 rounded-full bg-teal-100 flex items-center justify-center">
+                    <User className="w-8 h-8 text-teal-600" />
+                  </div>
+                  <div>
+                    <p className="text-lg font-medium text-gray-800">{patientProfile.name}</p>
+                    <p className="text-sm text-gray-500">ID: {patientProfile.unique_id}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-gray-500">Age</p>
+                    <p className="text-gray-800">{patientProfile.age ? `${patientProfile.age} years` : '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Gender</p>
+                    <p className="text-gray-800">{patientProfile.gender || '—'}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Latest Vitals */}
+              {(patientProfile.latest_bp_systolic || patientProfile.latest_bp_diastolic || 
+                patientProfile.latest_blood_glucose || patientProfile.latest_weight_kg || 
+                patientProfile.latest_height_cm) ? (
+                <div className="bg-green-50 rounded-xl p-4 border border-green-100">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Activity className="w-5 h-5 text-green-600" />
+                    <p className="text-sm font-medium text-green-900">Latest Vitals</p>
+                  </div>
+                  {patientProfile.latest_vitals_date && (
+                    <p className="text-xs text-gray-500 mb-3">
+                      Last checked: {new Date(patientProfile.latest_vitals_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    {(patientProfile.latest_bp_systolic !== undefined && patientProfile.latest_bp_systolic !== null) && (
+                      <div>
+                        <p className="text-xs text-gray-500">BP Systolic</p>
+                        <p className="text-gray-800 font-medium">{patientProfile.latest_bp_systolic} mmHg</p>
+                      </div>
+                    )}
+                    {(patientProfile.latest_bp_diastolic !== undefined && patientProfile.latest_bp_diastolic !== null) && (
+                      <div>
+                        <p className="text-xs text-gray-500">BP Diastolic</p>
+                        <p className="text-gray-800 font-medium">{patientProfile.latest_bp_diastolic} mmHg</p>
+                      </div>
+                    )}
+                    {(patientProfile.latest_blood_glucose !== undefined && patientProfile.latest_blood_glucose !== null) && (
+                      <div>
+                        <p className="text-xs text-gray-500">Blood Glucose</p>
+                        <p className="text-gray-800 font-medium">{patientProfile.latest_blood_glucose} mg/dL</p>
+                      </div>
+                    )}
+                    {(patientProfile.latest_weight_kg !== undefined && patientProfile.latest_weight_kg !== null) && (
+                      <div>
+                        <p className="text-xs text-gray-500">Weight</p>
+                        <p className="text-gray-800 font-medium">{patientProfile.latest_weight_kg} kg</p>
+                      </div>
+                    )}
+                    {(patientProfile.latest_height_cm !== undefined && patientProfile.latest_height_cm !== null) && (
+                      <div>
+                        <p className="text-xs text-gray-500">Height</p>
+                        <p className="text-gray-800 font-medium">{patientProfile.latest_height_cm} cm</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100 text-center">
+                  <Activity className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No vitals recorded yet</p>
+                  <p className="text-xs text-gray-400 mt-1">Vitals will be updated after your next doctor visit</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

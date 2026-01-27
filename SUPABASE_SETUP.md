@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   age INTEGER,
   gender TEXT,
   gov_id TEXT,
+  -- Latest vitals (auto-updated from most recent doctor visit)
+  latest_bp_systolic INTEGER,
+  latest_bp_diastolic INTEGER,
+  latest_blood_glucose INTEGER,
+  latest_weight_kg NUMERIC,
+  latest_height_cm NUMERIC,
+  latest_vitals_date DATE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -60,7 +67,43 @@ CREATE INDEX IF NOT EXISTS idx_user_profiles_unique_id ON user_profiles(unique_i
 CREATE INDEX IF NOT EXISTS idx_user_profiles_phone ON user_profiles(phone);
 ```
 
-### 5. Enable Authentication Providers
+### 5. Create the doctor_visits table (tracks visits + vitals)
+
+```sql
+CREATE TABLE IF NOT EXISTS doctor_visits (
+   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   patient_unique_id TEXT NOT NULL,
+   doctor_id UUID NOT NULL,
+   doctor_name TEXT,
+   category TEXT,
+   diagnosis TEXT,
+   prescription TEXT[],
+   visit_date DATE NOT NULL DEFAULT CURRENT_DATE,
+   seen_by_patient BOOLEAN DEFAULT FALSE,
+   -- Vitals captured during the visit
+   blood_pressure_systolic INTEGER,
+   blood_pressure_diastolic INTEGER,
+   blood_glucose INTEGER,
+   weight_kg NUMERIC,
+   height_cm NUMERIC,
+   created_at TIMESTAMPTZ DEFAULT NOW(),
+   updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE doctor_visits ENABLE ROW LEVEL SECURITY;
+
+-- Basic policies (adapt to your access rules)
+CREATE POLICY "Patients can view their visits" ON doctor_visits
+   FOR SELECT USING (auth.uid() IS NOT NULL);
+
+CREATE POLICY "Doctors can insert/update their visits" ON doctor_visits
+   FOR ALL USING (auth.uid() = doctor_id) WITH CHECK (auth.uid() = doctor_id);
+
+CREATE INDEX IF NOT EXISTS idx_doctor_visits_patient ON doctor_visits(patient_unique_id);
+CREATE INDEX IF NOT EXISTS idx_doctor_visits_date ON doctor_visits(visit_date);
+```
+
+### 6. Enable Authentication Providers
 
 #### Phone/SMS Authentication:
 1. Go to **Authentication** → **Providers** → **Phone**

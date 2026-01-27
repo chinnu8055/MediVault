@@ -324,8 +324,8 @@ export default function DoctorDashboard() {
             <History className="w-7 h-7 text-green-600" />
           </div>
           <div className="flex-1 text-left">
-            <p className="text-gray-800">Visit History</p>
-            <p className="text-sm text-gray-500">View previous consultations</p>
+            <p className="text-gray-800">Today's Visits</p>
+            <p className="text-sm text-gray-500">All patients seen today</p>
           </div>
         </button>
       </div>
@@ -397,7 +397,7 @@ export default function DoctorDashboard() {
                 <button
                   onClick={() => {
                     if (searchPatientId.trim()) {
-                      navigate(`/visit-history?patientId=${searchPatientId}`);
+                      navigate('/patient-visit-lookup', { state: { patientId: searchPatientId.trim() } });
                       setSearchPatientId('');
                       setShowSearchModal(false);
                     }
